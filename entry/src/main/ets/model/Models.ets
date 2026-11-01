@@ -327,6 +327,38 @@ export class PlayerCommentPage {
   cursor: string = '';
 }
 
+/** 直播平台入口（虎扑 matchTvList，如咪咕视频，pay=false 即免费） */
+export class LiveTvEntry {
+  name: string = '';
+  url: string = '';
+  pay: boolean = false;
+}
+
+/** 官方视频直播流（虎扑 matchVideoList），url 为可直接播放的 m3u8/mp4 */
+export class LiveVideoEntry {
+  title: string = '';
+  url: string = '';
+  cover: string = '';
+  /** 清晰度标签（如 高清 / 蓝光），来源缺省时为空 */
+  quality: string = '';
+}
+
+/** 比赛直播信息（m.hupu.com/{league}/live/{matchId} SSR 内嵌 matchInfo 摘要） */
+export class MatchLiveInfo {
+  /** 比赛状态：NOTSTARTED / INPROGRESS / COMPLETED */
+  matchStatus: string = '';
+  /** 状态文案（未开始 / 进行中 / 已结束） */
+  statusText: string = '';
+  /** 开始时间文案（如 11月02日 10:00） */
+  startText: string = '';
+  /** 虎扑自己的视频直播（App 专用链路）是否开放 */
+  openLive: boolean = false;
+  /** 官方直播平台入口（免费/付费） */
+  tvList: LiveTvEntry[] = [];
+  /** 官方视频流（可直接在 App 内播放） */
+  videoList: LiveVideoEntry[] = [];
+}
+
 /** 战报事件（进球/红牌/关键镜头等） */
 export class BattleEvent {
   time: string = '';

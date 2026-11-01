@@ -1,4 +1,5 @@
 import { MyApi, MyProfile, MyThreadItem } from '../network/MyApi';
+import { SessionManager, HupuUserInfo } from '../network/SessionManager';
 import { HupuApi } from '../network/HupuApi';
 import { UserProfile, UserPostItem, UserSpaceData } from '../model/Models';
 import { LoadState } from '../views/StateView';
@@ -100,8 +101,16 @@ export struct UserSpacePage {
   private async loadHead(): Promise<void> {
     this.headState = LoadState.Loading;
     try {
-      this.profile = await MyApi.getMyProfile();
+      // 先取登录态拿 puid，再走用户主页 userInfoData（主题帖/回帖/声望/等级为全站总数）
+      const u: HupuUserInfo | null = await SessionManager.verify();
+      const puid: string = u === null ? '' : (u.puid.length > 0 ? u.puid : u.uid);
+      const alt: string = u === null ? '' : u.uid;
+      this.profile = await MyApi.getMyProfile(puid, alt);
       this.headState = this.profile.username.length > 0 ? LoadState.Ready : LoadState.Empty;
+      // 拿到权威卡片：广播给"我的"页补齐统计（同一次会话内避免那边显示 —）
+      if (this.profile.fromCard) {
+        AppStorage.setOrCreate<number>('selfCardVersion', Date.now());
+      }
     } catch (e) {
       this.headState = LoadState.Error;
     }
@@ -452,9 +461,9 @@ export struct UserSpacePage {
                 .alignItems(VerticalAlign.Center)
 
                 Row() {
-                  this.StatCell(this.profile.level.replace(/[^0-9]/g, '') || '0', '论坛等级')
-                  this.StatCell(this.profile.calories.replace(/[^0-9]/g, '') || '0', '卡路里')
-                  this.StatCell(`${this.threads.length}`, this.tab === 0 ? '主题帖(本页)' : '回帖(本页)')
+                  this.StatCell(`${this.profile.reputation}`, '声望')
+                  this.StatCell(`${this.profile.threadCount}`, '主题帖')
+                  this.StatCell(`${this.profile.replyCount}`, '回帖')
                 }
                 .width('100%')
                 .padding({ top: 16 })

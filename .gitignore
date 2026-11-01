@@ -13,9 +13,20 @@
 /probe
 **/.preview
 /generated-images
+.codeartsdoer
 
 # 构建产物
 *.hap
+
+# 日志与临时文件
+*.log
+_*.txt
+_*.bat
+_*.ps1
+
+# AI/IDE 本地数据
+/.codebuddy
+.codebuddy/teams
 
 # 调试用抓包样例
 /ws1.json

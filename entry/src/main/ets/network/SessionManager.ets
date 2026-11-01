@@ -24,8 +24,9 @@ interface UserRespDto {
 }
 
 interface UserInnerDto {
-  uid?: string;
-  puid?: string;
+  /** 服务端可能返回数字或字符串，统一 String() 归一 */
+  uid?: string | number;
+  puid?: string | number;
   username?: string;
   header?: string;
   spaceurl?: string;
@@ -112,8 +113,8 @@ export class SessionManager {
       const resp = await HttpManager.getJsonAuth<UserRespDto>('https://m.hupu.com/api/v2/user', SessionManager.cookie);
       if (resp.code === 200 && resp.data && resp.data.username) {
         const u: HupuUserInfo = new HupuUserInfo();
-        u.uid = resp.data.uid ?? '';
-        u.puid = resp.data.puid ?? '';
+        u.uid = SessionManager.toId(resp.data.uid);
+        u.puid = SessionManager.toId(resp.data.puid);
         u.username = resp.data.username ?? '';
         u.header = resp.data.header ?? '';
         u.spaceurl = resp.data.spaceurl ?? '';
@@ -124,6 +125,15 @@ export class SessionManager {
     }
     SessionManager.syncState();
     return null;
+  }
+
+  /** id 归一：数字/字符串/空 → 非空字符串 */
+  private static toId(v: string | number | undefined): string {
+    if (v === undefined || v === null) {
+      return '';
+    }
+    const s: string = `${v}`.trim();
+    return s === 'null' || s === 'undefined' ? '' : s;
   }
 
   /** 登录失效（写接口 401 时调用）：清 Cookie 降级只读 */

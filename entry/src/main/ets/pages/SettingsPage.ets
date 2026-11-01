@@ -1,25 +1,28 @@
-import { ImageKnife } from '@ohos/imageknife';
+import { ImageKnife, CacheStrategy } from '@ohos/imageknife';
 import { bundleManager, common } from '@kit.AbilityKit';
-import { pasteboard } from '@kit.BasicServicesKit';
 import { Spacing, Radius, RouteName } from '../common/Theme';
-import { FavStore } from '../database/FavStore';
-import { ChannelStore } from '../database/ChannelStore';
-import { CacheStore } from '../database/CacheStore';
-import { ChannelCatalog } from '../common/Channels';
 import { SessionManager, HupuUserInfo } from '../network/SessionManager';
+import { AppSettings, CACHE_PRESETS, DEFAULT_CACHE_MB, MIN_CACHE_MB, MAX_CACHE_MB } from '../common/AppSettings';
 import { AppNavBar } from '../views/AppNavBar';
 
-/** 设置/关于页 */
+/** 设置页：关于 / 账号 / 存储设置 / 播放设置 */
 @Component
 export struct SettingsPage {
   @Consume('pageStack') pageStack: NavPathStack;
   @StorageLink('loginState') @Watch('onLoginChanged') loginState: number = 0;
+  @StorageLink('imageCacheMb') imageCacheMb: number = DEFAULT_CACHE_MB;
+  @StorageLink('autoplayFeed') autoplayFeed: boolean = true;
+  @StorageLink('autoplayPost') autoplayPost: boolean = true;
   @State version: string = '0.5.0';
-  @State clearing: boolean = false;
   @State showCookieEditor: boolean = false;
   @State cookieInput: string = '';
   @State verifying: boolean = false;
   @State loginUser: HupuUserInfo = new HupuUserInfo();
+  /** 缓存上限编辑面板（长按缓存行唤起） */
+  @State showCacheEditor: boolean = false;
+  @State cacheInput: string = '';
+  /** 图片磁盘缓存已用大小（MB） */
+  @State cacheUsedMb: number = 0;
 
   aboutToAppear(): void {
     try {
@@ -30,6 +33,7 @@ export struct SettingsPage {
     } catch (e) {
     }
     this.initSession();
+    this.refreshCacheUsage();
   }
 
   private async initSession(): Promise<void> {
@@ -66,111 +70,46 @@ export struct SettingsPage {
     }
   }
 
-  /** 清除图片缓存（内存 + 磁盘） */
-  private async clearImageCache(): Promise<void> {
-    if (this.clearing) {
+  /** 读取图片磁盘缓存当前占用（MB） */
+  private refreshCacheUsage(): void {
+    try {
+      const used: number | undefined = ImageKnife.getInstance().getCurrentCacheSize(CacheStrategy.File);
+      this.cacheUsedMb = used === undefined || used < 0 ? 0 : used / 1024 / 1024;
+    } catch (e) {
+      this.cacheUsedMb = 0;
+    }
+  }
+
+  /** 缓存占用文案（保留一位小数） */
+  private cacheUsedText(): string {
+    if (this.cacheUsedMb < 1) {
+      return `${(this.cacheUsedMb * 1024).toFixed(0)} KB`;
+    }
+    return `${this.cacheUsedMb.toFixed(1)} MB`;
+  }
+
+  /** 打开缓存上限编辑面板（长按触发） */
+  private openCacheEditor(): void {
+    this.cacheInput = `${this.imageCacheMb}`;
+    this.showCacheEditor = true;
+  }
+
+  /** 保存缓存上限：合法值立即生效，越界提示 */
+  private async saveCacheLimit(): Promise<void> {
+    const raw: string = this.cacheInput.trim();
+    const n: number = Number(raw);
+    if (raw.length === 0 || !Number.isFinite(n) || n <= 0 || Math.floor(n) !== n) {
+      this.toast('请输入整数（单位 MB）');
       return;
     }
-    this.clearing = true;
-    try {
-      ImageKnife.getInstance().removeAllMemoryCache();
-      await ImageKnife.getInstance().removeAllFileCache();
-      this.toast('图片缓存已清除');
-    } catch (e) {
-      this.toast('清除失败，请重试');
-    }
-    this.clearing = false;
-  }
-
-  /** 清除数据缓存（缓存优先渲染的频道与详情快照） */
-  private async clearDataCache(): Promise<void> {
-    if (this.clearing) {
+    if (n < MIN_CACHE_MB || n > MAX_CACHE_MB) {
+      this.toast(`请输入 ${MIN_CACHE_MB} – ${MAX_CACHE_MB} 之间的数值`);
       return;
     }
-    this.clearing = true;
-    try {
-      await CacheStore.clear(this.getCtx());
-      this.toast('数据缓存已清除');
-    } catch (e) {
-      this.toast('清除失败，请重试');
-    }
-    this.clearing = false;
-  }
-
-  private confirmClearFavs(): void {
-    this.getUIContext().showAlertDialog({
-      title: '清除全部收藏',
-      message: '将删除所有本地收藏的帖子，删除后无法恢复。',
-      autoCancel: true,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '清除',
-        fontColor: $r('app.color.brand_primary'),
-        action: () => {
-          this.doClearFavs();
-        }
-      }
-    });
-  }
-
-  private async doClearFavs(): Promise<void> {
-    try {
-      await FavStore.clear(this.getCtx());
-      AppStorage.setOrCreate<number>('favVersion', Date.now());
-      this.toast('收藏已清空');
-    } catch (e) {
-      this.toast('操作失败');
-    }
-  }
-
-  /** 频道设置恢复默认 */
-  private async resetChannels(): Promise<void> {
-    try {
-      const ids: string[] = ChannelCatalog.defaults();
-      AppStorage.setOrCreate<string>('channelIdsJson', JSON.stringify(ids));
-      AppStorage.setOrCreate<string>('activeChannelId', ids[0]);
-      await ChannelStore.save(this.getCtx(), ids);
-      this.toast('频道已恢复默认');
-    } catch (e) {
-      this.toast('操作失败');
-    }
-  }
-
-  /** 导出收藏到剪贴板（JSON） */
-  private async exportFavs(): Promise<void> {
-    try {
-      const json: string = await FavStore.exportJson(this.getCtx());
-      const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, json);
-      await pasteboard.getSystemPasteboard().setData(data);
-      this.toast('收藏已导出到剪贴板');
-    } catch (e) {
-      this.toast('导出失败，请重试');
-    }
-  }
-
-  /** 从剪贴板导入收藏（幂等合并） */
-  private async importFavs(): Promise<void> {
-    try {
-      const data: pasteboard.PasteData = await pasteboard.getSystemPasteboard().getData();
-      const text: string = data.getPrimaryText() ?? '';
-      if (text.trim().length === 0) {
-        this.toast('剪贴板为空');
-        return;
-      }
-      const count: number = await FavStore.importJson(this.getCtx(), text.trim());
-      if (count < 0) {
-        this.toast('剪贴板内容不是有效的收藏备份');
-        return;
-      }
-      AppStorage.setOrCreate<number>('favVersion', Date.now());
-      this.toast(`已导入 ${count} 条收藏`);
-    } catch (e) {
-      this.toast('导入失败，请重试');
-    }
+    await AppSettings.setImageCacheMb(this.getCtx(), n);
+    this.showCacheEditor = false;
+    this.refreshCacheUsage();
+    this.toast(`缓存上限已设为 ${AppSettings.clampMb(n)} MB`);
   }
 
   /** 注入 Cookie：保存并实测验证 */
@@ -253,6 +192,45 @@ export struct SettingsPage {
     .onClick(() => {
       onTap();
     })
+  }
+
+  /** 关于（第一位）：应用信息 + 免责声明 */
+  @Builder
+  AboutSection() {
+    this.SectionTitle('关于')
+    Column() {
+      Row({ space: 12 }) {
+        Image($r('app.media.app_icon'))
+          .width(48)
+          .height(48)
+          .borderRadius(10)
+        Column({ space: 3 }) {
+          Text('Hupu Luna')
+            .fontSize(17)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+          Text(`版本 ${this.version} · 非官方客户端`)
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .padding({ top: 12, bottom: 12 })
+
+      Divider().color($r('app.color.divider'))
+
+      Text('本应用为第三方学习项目，与虎扑官方无任何关联。所有内容数据均来自虎扑公开页面，版权归虎扑及相关权利人所有。仅供个人学习与交流使用，请勿用于商业用途。')
+        .fontSize(12)
+        .lineHeight(19)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .padding({ top: 12, bottom: 12 })
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14 })
+    .backgroundColor($r('app.color.bg_card'))
+    .borderRadius(Radius.md)
   }
 
   @Builder
@@ -370,97 +348,199 @@ export struct SettingsPage {
     }
   }
 
+  /** 存储设置（第三位）：只有缓存上限，点击右侧箭头自定义 */
+  @Builder
+  StorageSection() {
+    this.SectionTitle('存储设置')
+    Column({ space: 2 }) {
+      Row() {
+        Text('图片缓存上限')
+          .fontSize(15)
+          .fontColor($r('app.color.text_primary'))
+        Blank()
+        Text(`${this.imageCacheMb} MB`)
+          .fontSize(14)
+          .fontColor($r('app.color.text_secondary'))
+        Text('›')
+          .fontSize(18)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ left: 4 })
+      }
+      .width('100%')
+      .height(50)
+      .onClick(() => {
+        this.openCacheEditor();
+      })
+
+      Text(`已占用 ${this.cacheUsedText()} · 点击右侧箭头可自定义`)
+        .fontSize(11)
+        .fontColor($r('app.color.text_tertiary'))
+        .width('100%')
+        .padding({ bottom: 10 })
+        .onClick(() => {
+          this.openCacheEditor();
+        })
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14 })
+    .backgroundColor($r('app.color.bg_card'))
+    .borderRadius(Radius.md)
+
+    if (this.showCacheEditor) {
+      this.CacheEditor()
+    }
+  }
+
+  /** 缓存上限编辑面板：常用档位 + 自定义输入 */
+  @Builder
+  CacheEditor() {
+    Column({ space: 10 }) {
+      Text(`缓存上限（${MIN_CACHE_MB} – ${MAX_CACHE_MB} MB）`)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+
+      Row({ space: 8 }) {
+        ForEach(CACHE_PRESETS, (mb: number) => {
+          Text(`${mb}`)
+            .fontSize(12)
+            .fontColor(this.imageCacheMb === mb ? Color.White : $r('app.color.text_primary'))
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .backgroundColor(this.imageCacheMb === mb ? $r('app.color.brand_primary') : $r('app.color.tag_bg'))
+            .borderRadius(13)
+            .onClick(() => {
+              this.cacheInput = `${mb}`;
+              this.saveCacheLimit();
+            })
+        }, (mb: number) => `${mb}`)
+      }
+      .width('100%')
+
+      Row({ space: 8 }) {
+        TextInput({ text: this.cacheInput, placeholder: '自定义大小' })
+          .type(InputType.Number)
+          .fontSize(13)
+          .height(38)
+          .layoutWeight(1)
+          .backgroundColor($r('app.color.tag_bg'))
+          .borderRadius(Radius.sm)
+          .onChange((v: string) => {
+            this.cacheInput = v;
+          })
+        Text('MB')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+      }
+      .width('100%')
+
+      Row({ space: 10 }) {
+        Text('取消')
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: 9, bottom: 9 })
+          .backgroundColor($r('app.color.tag_bg'))
+          .borderRadius(Radius.sm)
+          .onClick(() => {
+            this.showCacheEditor = false;
+          })
+        Text('保存')
+          .fontSize(13)
+          .fontColor(Color.White)
+          .layoutWeight(1)
+          .textAlign(TextAlign.Center)
+          .padding({ top: 9, bottom: 9 })
+          .backgroundColor($r('app.color.brand_primary'))
+          .borderRadius(Radius.sm)
+          .onClick(() => {
+            this.saveCacheLimit();
+          })
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .padding(12)
+    .backgroundColor($r('app.color.bg_card'))
+    .borderRadius(Radius.md)
+    .margin({ top: 8 })
+  }
+
+  /** 播放设置（第四位）：信息流 / 帖子详情两个自动播放开关 */
+  @Builder
+  PlaybackSection() {
+    this.SectionTitle('播放设置')
+    Column() {
+      this.SwitchRow('信息流自动播放', '首页推荐流滚动到视频时自动静音播放', this.autoplayFeed, (on: boolean) => {
+        AppSettings.setAutoPlayFeed(this.getCtx(), on);
+      })
+      Divider().color($r('app.color.divider'))
+      this.SwitchRow('打开帖子自动播放', '进入视频帖详情页时自动静音播放', this.autoplayPost, (on: boolean) => {
+        AppSettings.setAutoPlayPost(this.getCtx(), on);
+      })
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14 })
+    .backgroundColor($r('app.color.bg_card'))
+    .borderRadius(Radius.md)
+  }
+
+  @Builder
+  SwitchRow(title: string, desc: string, value: boolean, onToggle: (on: boolean) => void) {
+    Row({ space: 12 }) {
+      Column({ space: 3 }) {
+        Text(title)
+          .fontSize(15)
+          .fontColor($r('app.color.text_primary'))
+        Text(desc)
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Toggle({ type: ToggleType.Switch, isOn: value })
+        .selectedColor($r('app.color.brand_primary'))
+        .onChange((on: boolean) => {
+          onToggle(on);
+        })
+    }
+    .width('100%')
+    .padding({ top: 12, bottom: 12 })
+    .alignItems(VerticalAlign.Center)
+  }
+
   build() {
     NavDestination() {
       Column() {
         AppNavBar({ title: '设置' })
         Scroll() {
-        Column() {
-          this.AccountSection()
-
-          this.SectionTitle('关于')
-
           Column() {
-            Row({ space: 12 }) {
-              Image($r('app.media.app_icon'))
-                .width(48)
-                .height(48)
-                .borderRadius(10)
-              Column({ space: 3 }) {
-                Text('Hupu Luna')
-                  .fontSize(17)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_primary'))
-                Text(`版本 ${this.version} · 非官方客户端`)
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-            }
-            .width('100%')
-            .padding({ top: 12, bottom: 12 })
+            this.AboutSection()
+            this.AccountSection()
+            this.StorageSection()
+            this.PlaybackSection()
 
-            Divider().color($r('app.color.divider'))
-
-            Text('本应用为第三方学习项目，与虎扑官方无任何关联。所有内容数据均来自虎扑公开页面，版权归虎扑及相关权利人所有。仅供个人学习与交流使用，请勿用于商业用途。')
-              .fontSize(12)
-              .lineHeight(19)
-              .fontColor($r('app.color.text_secondary'))
+            Text('数据来源：m.hupu.com / bbs.hupu.com 公开页面')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
               .width('100%')
-              .padding({ top: 12, bottom: 12 })
+              .textAlign(TextAlign.Center)
+              .padding({ top: 20, bottom: 20 })
           }
+          .padding({ left: Spacing.lg, right: Spacing.lg, top: Spacing.md, bottom: Spacing.lg })
           .width('100%')
-          .padding({ left: 14, right: 14 })
-          .backgroundColor($r('app.color.bg_card'))
-          .borderRadius(Radius.md)
-
-          this.SectionTitle('存储')
-
-          Column() {
-            this.RowItem(this.clearing ? '正在清除…' : '清除图片缓存', false, false, () => {
-              this.clearImageCache();
-            })
-            Divider().color($r('app.color.divider'))
-            this.RowItem('清除数据缓存', false, false, () => {
-              this.clearDataCache();
-            })
-            Divider().color($r('app.color.divider'))
-            this.RowItem('清除全部收藏', true, true, () => {
-              this.confirmClearFavs();
-            })
-            Divider().color($r('app.color.divider'))
-            this.RowItem('恢复默认频道', true, false, () => {
-              this.resetChannels();
-            })
-            Divider().color($r('app.color.divider'))
-            this.RowItem('导出收藏（剪贴板）', false, false, () => {
-              this.exportFavs();
-            })
-            Divider().color($r('app.color.divider'))
-            this.RowItem('从剪贴板导入收藏', false, false, () => {
-              this.importFavs();
-            })
-          }
-          .width('100%')
-          .padding({ left: 14, right: 14 })
-          .backgroundColor($r('app.color.bg_card'))
-          .borderRadius(Radius.md)
-
-          Text('数据来源：m.hupu.com / bbs.hupu.com 公开页面')
-            .fontSize(11)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-            .textAlign(TextAlign.Center)
-            .padding({ top: 20, bottom: 20 })
+          // 内容不足一屏时撑满视口，强制从顶部开始排版（否则 Scroll 会垂直居中留出大块空白）
+          .constraintSize({ minHeight: '100%' })
         }
-        .padding(Spacing.lg)
         .width('100%')
+        .layoutWeight(1)
+        .align(Alignment.Top)
+        .scrollBar(BarState.Off)
+        .backgroundColor($r('app.color.bg_page'))
       }
       .width('100%')
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-      .backgroundColor($r('app.color.bg_page'))
-      }
+      .height('100%')
     }
     .hideTitleBar(true)
     .backgroundColor($r('app.color.bg_page'))

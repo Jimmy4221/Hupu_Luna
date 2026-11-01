@@ -2,7 +2,7 @@ import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want 
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
-import { ImageKnife } from '@ohos/imageknife';
+import { AppSettings } from '../common/AppSettings';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'HupuLuna';
@@ -50,14 +50,15 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     // 首帧前恢复频道态，保证首页渲染即为上次停留栏目
     this.restoreChannelState();
+    // 首帧前恢复偏好设置（缓存上限 / 自动播放开关）
+    AppSettings.restore(this.context);
 
-    // 初始化 ImageKnife 磁盘缓存（最多 256 个文件 / 256MB）
+    // 初始化 ImageKnife 磁盘缓存（上限取用户设置，默认 512MB）
     try {
-      ImageKnife.getInstance()
-        .initFileCache(this.context, 256, 256 * 1024 * 1024)
-        .then(() => {
-          hilog.info(DOMAIN, TAG, 'ImageKnife file cache ready');
-        });
+      const cacheMb: number = AppSettings.imageCacheMb();
+      AppSettings.applyImageCache(this.context, cacheMb).then(() => {
+        hilog.info(DOMAIN, TAG, 'ImageKnife file cache ready, limit=%{public}dMB', cacheMb);
+      });
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'ImageKnife init failed');
     }

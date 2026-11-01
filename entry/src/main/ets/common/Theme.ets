@@ -40,4 +40,5 @@ export class RouteName {
   static readonly LOGIN_WEB: string = 'LoginWeb';
   static readonly USER_SPACE: string = 'UserSpace';
   static readonly CREATE_THREAD: string = 'CreateThread';
+  static readonly LIVE_WEB: string = 'LiveWeb';
 }

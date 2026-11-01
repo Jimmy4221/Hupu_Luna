@@ -49,6 +49,8 @@ export struct PostDetailPage {
    * curSec/durSec=进度与总时长（秒）/ scrubbing=拖动进度条中
    */
   @State videoReady: boolean = false;
+  /** 是否已真正开始播放过（决定封面何时撤下：自动播放关闭时封面常驻） */
+  @State videoStarted: boolean = false;
   @State videoPlaying: boolean = false;
   @State videoMuted: boolean = true;
   @State videoCurSec: number = 0;
@@ -58,6 +60,16 @@ export struct PostDetailPage {
   private videoController: VideoController = new VideoController();
   /** 静音按钮按下标记：防止点击穿透触发画面暂停 */
   private mutePressed: boolean = false;
+  /** 设置项：打开帖子是否自动播放视频 */
+  @StorageLink('autoplayPost') @Watch('onAutoplayChanged') autoplayPost: boolean = true;
+
+  /** 关闭"打开帖子自动播放"时立刻暂停正在播的视频（仅暂停，进度保留） */
+  onAutoplayChanged(): void {
+    if (!this.autoplayPost && this.videoPlaying) {
+      this.videoController.pause();
+      this.resumeOnShow = false;
+    }
+  }
   /** 离开页面时是否处于播放中（返回时据此续播） */
   private resumeOnShow: boolean = false;
   /** 内容区宽度缓存（vp，惰性计算） */
@@ -96,6 +108,7 @@ export struct PostDetailPage {
     this.detail = d;
     if (urlChanged) {
       this.videoReady = false;
+      this.videoStarted = false;
       this.videoPlaying = false;
       this.videoCurSec = 0;
       this.videoDurSec = 0;
@@ -484,7 +497,7 @@ export struct PostDetailPage {
     Column() {
       Stack({ alignContent: Alignment.Bottom }) {
         Video({ src: this.detail.videoUrl, controller: this.videoController })
-          .autoPlay(true)
+          .autoPlay(this.autoplayPost)
           .muted(this.videoMuted)
           .loop(true)
           .controls(false)
@@ -492,6 +505,7 @@ export struct PostDetailPage {
           .width('100%')
           .height('100%')
           .onStart(() => {
+            this.videoStarted = true;
             this.videoPlaying = true;
           })
           .onPause(() => {
@@ -513,23 +527,40 @@ export struct PostDetailPage {
             this.togglePlay();
           })
 
-        // 封面层：视频就绪前遮挡加载期黑屏
-        if (!this.videoReady) {
-          if (this.detail.videoCover.length > 0) {
-            Image(thumbUrl(this.detail.videoCover, 720))
-              .width('100%')
-              .height('100%')
-              .objectFit(ImageFit.Cover)
-          } else {
-            Column()
-              .width('100%')
-              .height('100%')
-              .backgroundColor('#000000')
+        // 封面层：首次播放前（含自动播放关闭时）常驻，避免黑屏/露出冻结首帧；
+        // 播放开始后撤下，之后暂停也不再回弹封面
+        if (!this.videoStarted) {
+          Stack({ alignContent: Alignment.Center }) {
+            if (this.detail.videoCover.length > 0) {
+              Image(thumbUrl(this.detail.videoCover, 720))
+                .width('100%')
+                .height('100%')
+                .objectFit(ImageFit.Cover)
+            } else {
+              Column()
+                .width('100%')
+                .height('100%')
+                .backgroundColor('#000000')
+            }
+            // 未播放态给一个播放按钮提示（点击由 Video 的 onClick 统一处理）
+            Column() {
+              Text('▶')
+                .fontSize(16)
+                .fontColor(Color.White)
+            }
+            .width(46)
+            .height(46)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor('#59000000')
+            .borderRadius(23)
           }
+          .width('100%')
+          .height('100%')
+          .hitTestBehavior(HitTestMode.Transparent)
         }
 
-        // 底部控件条：静音 + 当前时间 + 进度条 + 总时长
-        if (this.videoReady) {
+        // 底部控件条：静音 + 当前时间 + 进度条 + 总时长（起播后显示，封面态不叠加空进度）
+        if (this.videoReady && this.videoStarted) {
           Row({ space: 8 }) {
             Row() {
               SymbolGlyph(this.videoMuted
@@ -1011,6 +1042,7 @@ export struct PostDetailPage {
       }
     })
     .onShown(() => {
+      // 返回本页续播（手动起播的也算，与自动播放开关无关）
       if (this.resumeOnShow) {
         this.resumeOnShow = false;
         this.videoController.start();

@@ -16,7 +16,12 @@ import { PlayerProfilePage } from './PlayerProfilePage';
 import { CookieLoginPage } from './CookieLoginPage';
 import { UserSpacePage } from './UserSpacePage';
 import { CreateThreadPage } from './CreateThreadPage';
+import { LiveWebPage } from './LiveWebPage';
 import { RouteName } from '../common/Theme';
+import { hapticTap } from '../common/Haptics';
+import { SessionManager, HupuUserInfo } from '../network/SessionManager';
+import { MyApi, MyProfile } from '../network/MyApi';
+import { common } from '@kit.AbilityKit';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 import { SymbolGlyphModifier } from '@kit.ArkUI';
 
@@ -26,6 +31,41 @@ struct Index {
   @Provide('pageStack') pageStack: NavPathStack = new NavPathStack();
   @State currentIndex: number = 0;
   private tabsController: HdsTabsController = new HdsTabsController();
+
+  aboutToAppear(): void {
+    // 启动后等首页主请求平息，再统一预取本人资料并落盘：
+    // "我的"页首帧就能显示真实数字，不必依赖它自己那次冷启动请求是否成功
+    setTimeout(() => {
+      this.prefetchSelfCard(0);
+    }, 1200);
+  }
+
+  /** 预取本人资料（失败递增退避重试 3 次），成功后广播给各页面 */
+  private async prefetchSelfCard(round: number): Promise<void> {
+    try {
+      const ctx: common.Context = this.getUIContext().getHostContext() as common.Context;
+      await SessionManager.ensureLoaded(ctx);
+      if (AppStorage.get<number>('loginState') !== 1) {
+        return;
+      }
+      const u: HupuUserInfo | null = await SessionManager.verify();
+      if (u === null) {
+        return;
+      }
+      const puid: string = u.puid.length > 0 ? u.puid : u.uid;
+      const p: MyProfile | null = await MyApi.getUserCard(puid);
+      if (p !== null && p.fromCard) {
+        AppStorage.setOrCreate<number>('selfCardVersion', Date.now());
+        return;
+      }
+      if (round < 2) {
+        setTimeout(() => {
+          this.prefetchSelfCard(round + 1);
+        }, 2000 * (round + 1));
+      }
+    } catch (e) {
+    }
+  }
 
   /** 发帖页参数（可能未传，返回空串避免 undefined） */
   private createThreadParam(): string {
@@ -72,6 +112,8 @@ struct Index {
       UserSpacePage({ param: this.pageStack.getParamByName(RouteName.USER_SPACE)[0] as string })
     } else if (name === RouteName.CREATE_THREAD) {
       CreateThreadPage({ param: this.createThreadParam() })
+    } else if (name === RouteName.LIVE_WEB) {
+      LiveWebPage({ param: this.pageStack.getParamByName(RouteName.LIVE_WEB)[0] as string })
     } else {
       Column({ space: 8 }) {
         Text(name)
@@ -128,7 +170,15 @@ struct Index {
         }
       })
       .onChange((index: number) => {
+        // 底部 Tab 切换时给一次轻震动反馈
+        if (index !== this.currentIndex) {
+          hapticTap();
+        }
         this.currentIndex = index;
+        // 切到「我的」时通知该页自检资料（已有权威数据则不发请求）
+        if (index === 2) {
+          AppStorage.setOrCreate<number>('profileTick', Date.now());
+        }
       })
     }
     .hideTitleBar(true)

@@ -173,9 +173,22 @@ hvigor assembleHap
 
 ## 版本信息
 
-- **当前版本**: v0.12.0
+- **当前版本**: v0.13.1（versionCode 13000001）
 - **最低系统**: HarmonyOS NEXT 6.0
 - **包名**: `com.hupluna.app`
+
+## 目录约定
+
+以下为本地生成、不入库的内容，可随时删除或由工具重新生成：
+
+| 路径 | 说明 |
+|---|---|
+| `.hvigor/` | 构建缓存 |
+| `entry/build/` | 构建产物 |
+| `oh_modules/` | ohpm 依赖 |
+| `local.properties` | 本机 SDK 路径 |
+| `hap/` | 打包产物（`*.hap`） |
+| `.codebuddy/` | AI 助手本地数据 |
 
 ## 免责声明
 

@@ -1,6 +1,15 @@
 import { NbaApi } from '../network/NbaApi';
 import { SoccerApi } from '../network/SoccerApi';
-import { PlayerScoreRow, BattleReport, BattleEvent, BattleStat } from '../model/Models';
+import { LiveApi } from '../network/LiveApi';
+import {
+  PlayerScoreRow,
+  BattleReport,
+  BattleEvent,
+  BattleStat,
+  MatchLiveInfo,
+  LiveTvEntry,
+  LiveVideoEntry
+} from '../model/Models';
 import { LoadState, StateView } from '../views/StateView';
 import { Spacing, Radius, RouteName } from '../common/Theme';
 import { compactCount } from '../views/TagChip';
@@ -31,6 +40,12 @@ export struct MatchScorePage {
   @State report: BattleReport = new BattleReport();
   @State reportState: LoadState = LoadState.Loading;
   private reportLoaded: boolean = false;
+  /** 直播：官方转播入口 + 官方视频流 */
+  @State liveInfo: MatchLiveInfo = new MatchLiveInfo();
+  @State liveState: LoadState = LoadState.Loading;
+  @State liveIndex: number = 0;
+  private liveLoaded: boolean = false;
+  private liveController: VideoController = new VideoController();
   private matchId: string = '';
   private homeTeamId: string = '';
   private awayTeamId: string = '';
@@ -90,6 +105,44 @@ export struct MatchScorePage {
     } catch (e) {
       this.reportState = LoadState.Error;
     }
+  }
+
+  /** 直播信息（懒加载，与评分/战报互不影响） */
+  private async loadLive(): Promise<void> {
+    if (this.liveLoaded) {
+      return;
+    }
+    this.liveLoaded = true;
+    this.liveState = LoadState.Loading;
+    const league: string = this.leaguePath();
+    try {
+      const info: MatchLiveInfo = await LiveApi.getMatchLive(this.matchId, league);
+      this.liveInfo = info;
+      this.liveState = info.videoList.length > 0 || info.tvList.length > 0 ? LoadState.Ready : LoadState.Empty;
+    } catch (e) {
+      this.liveState = LoadState.Error;
+    }
+  }
+
+  /** 直播页路径联赛段（nba / cba） */
+  private leaguePath(): string {
+    return this.leagueTitle.toLowerCase() === 'cba' ? 'cba' : 'nba';
+  }
+
+  /** 当前选中的官方直播流 */
+  private currentLiveVideo(): LiveVideoEntry | null {
+    if (this.liveIndex < 0 || this.liveIndex >= this.liveInfo.videoList.length) {
+      return null;
+    }
+    return this.liveInfo.videoList[this.liveIndex];
+  }
+
+  /** 打开官方转播平台（内嵌 Web，账号与鉴权由平台自己完成） */
+  private openTv(entry: LiveTvEntry): void {
+    if (entry.url.length === 0) {
+      return;
+    }
+    this.pageStack.pushPathByName(RouteName.LIVE_WEB, `${entry.url}||${entry.name}`);
   }
 
   private currentPlayers(): PlayerScoreRow[] {
@@ -232,6 +285,9 @@ export struct MatchScorePage {
         this.tabSel = 2;
         if (!this.reportLoaded) {
           this.loadReport();
+        }
+        if (!this.liveLoaded) {
+          this.loadLive();
         }
       })
       Blank()
@@ -500,6 +556,153 @@ export struct MatchScorePage {
     .backgroundColor($r('app.color.bg_card'))
   }
 
+  /** 直播区标题（带状态点） */
+  @Builder
+  LiveTitle() {
+    Row({ space: 6 }) {
+      Text('直播')
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+      if (this.liveInfo.matchStatus === 'INPROGRESS' || this.liveInfo.matchStatus === 'STARTED') {
+        Row()
+          .width(6)
+          .height(6)
+          .borderRadius(3)
+          .backgroundColor($r('app.color.brand_primary'))
+        Text('进行中')
+          .fontSize(11)
+          .fontColor($r('app.color.brand_primary'))
+      } else if (this.liveInfo.startText.length > 0) {
+        Text(this.liveInfo.startText)
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      Blank()
+    }
+    .width('100%')
+    .padding({ left: Spacing.lg, right: Spacing.lg, top: 14, bottom: 6 })
+    .backgroundColor($r('app.color.bg_page'))
+  }
+
+  /** 官方视频流播放器（虎扑给出官方流地址时才出现） */
+  @Builder
+  LivePlayer() {
+    Column({ space: 0 }) {
+      Video({ src: this.currentLiveVideo()?.url ?? '', controller: this.liveController })
+        .autoPlay(true)
+        .controls(true)
+        .objectFit(ImageFit.Contain)
+        .width('100%')
+        .aspectRatio(16 / 9)
+        .backgroundColor('#000000')
+    }
+    .width('100%')
+    .backgroundColor($r('app.color.bg_card'))
+
+    if (this.liveInfo.videoList.length > 1) {
+      Row({ space: 8 }) {
+        ForEach(this.liveInfo.videoList, (v: LiveVideoEntry, idx: number) => {
+          Text(v.quality.length > 0 ? v.quality : (v.title.length > 0 ? v.title : `线路${idx + 1}`))
+            .fontSize(12)
+            .fontColor(this.liveIndex === idx ? Color.White : $r('app.color.text_primary'))
+            .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+            .backgroundColor(this.liveIndex === idx ? $r('app.color.brand_primary') : $r('app.color.tag_bg'))
+            .borderRadius(12)
+            .onClick(() => {
+              if (this.liveIndex !== idx) {
+                this.liveIndex = idx;
+              }
+            })
+        }, (v: LiveVideoEntry, idx: number) => `lv_${idx}_${v.url.length}`)
+      }
+      .width('100%')
+      .padding({ left: Spacing.lg, right: Spacing.lg, top: 8, bottom: 8 })
+      .backgroundColor($r('app.color.bg_card'))
+    }
+  }
+
+  /** 官方转播平台入口行 */
+  @Builder
+  LiveTvRow(entry: LiveTvEntry) {
+    Row({ space: 8 }) {
+      Text(entry.name)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+      Text(entry.pay ? '需会员' : '免费')
+        .fontSize(10)
+        .fontColor(entry.pay ? $r('app.color.text_secondary') : $r('app.color.brand_primary'))
+        .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+        .backgroundColor($r('app.color.tag_bg'))
+        .borderRadius(8)
+      Blank()
+      Text('观看')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+      Text('›')
+        .fontSize(16)
+        .fontColor($r('app.color.text_tertiary'))
+    }
+    .width('100%')
+    .height(48)
+    .padding({ left: Spacing.lg, right: Spacing.lg })
+    .backgroundColor($r('app.color.bg_card'))
+    .onClick(() => {
+      this.openTv(entry);
+    })
+  }
+
+  /** 战报页顶部的直播区：官方流优先，其次官方转播平台入口 */
+  @Builder
+  LiveSection() {
+    this.LiveTitle()
+    if (this.liveState === LoadState.Loading) {
+      Column() {
+        LoadingProgress()
+          .width(24)
+          .height(24)
+          .color($r('app.color.text_tertiary'))
+      }
+      .width('100%')
+      .padding({ top: 16, bottom: 16 })
+      .alignItems(HorizontalAlign.Center)
+      .backgroundColor($r('app.color.bg_card'))
+    } else if (this.liveState === LoadState.Ready) {
+      if (this.liveInfo.videoList.length > 0) {
+        this.LivePlayer()
+      }
+      if (this.liveInfo.tvList.length > 0) {
+        Column() {
+          ForEach(this.liveInfo.tvList, (t: LiveTvEntry, idx: number) => {
+            if (idx > 0) {
+              Divider().color($r('app.color.divider')).margin({ left: Spacing.lg })
+            }
+            this.LiveTvRow(t)
+          }, (t: LiveTvEntry, idx: number) => `tv_${idx}_${t.name}`)
+        }
+        .width('100%')
+        .backgroundColor($r('app.color.bg_card'))
+      }
+      Text(this.liveInfo.videoList.length > 0
+        ? '直播画面由虎扑官方流提供'
+        : '直播入口为官方转播平台，播放与会员权益由该平台提供')
+        .fontSize(11)
+        .fontColor($r('app.color.text_tertiary'))
+        .width('100%')
+        .padding({ left: Spacing.lg, right: Spacing.lg, top: 8, bottom: 8 })
+        .backgroundColor($r('app.color.bg_card'))
+    } else {
+      Row() {
+        Text(this.liveState === LoadState.Error ? '直播信息加载失败，可下拉重试' : '本场暂无官方直播入口')
+          .fontSize(13)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      .width('100%')
+      .padding({ left: Spacing.lg, right: Spacing.lg, top: 16, bottom: 16 })
+      .backgroundColor($r('app.color.bg_card'))
+    }
+  }
+
   build() {
     NavDestination() {
       Column() {
@@ -550,6 +753,13 @@ export struct MatchScorePage {
               }
             }, (p: PlayerScoreRow) => `st_${p.playerId}`)
           } else {
+            ListItem() {
+              Column() {
+                this.LiveSection()
+              }
+              .width('100%')
+            }
+
             if (this.reportState === LoadState.Ready) {
               if (this.report.content.length > 0) {
                 ListItem() {

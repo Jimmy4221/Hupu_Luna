@@ -131,8 +131,12 @@ export struct HomePage {
   private officialDryPages: number = 0;
   /** 当前视频是否静音（默认静音，切换视频时复位） */
   @State videoMuted: boolean = true;
+  /** 设置项：信息流（推荐频道）视频是否自动播放 */
+  @StorageLink('autoplayFeed') @Watch('onAutoplayChanged') autoplayFeed: boolean = true;
   /** 静音按钮按下标记：防止点击穿透触发卡片的"打开帖子" */
   private mutePressed: boolean = false;
+  /** 手动点播按钮按下标记：自动播放关闭时点播，不触发"打开帖子" */
+  private videoTapPressed: boolean = false;
   private pageIndex: number = 0;
   private cursor: string = '';
   private loadingMore: boolean = false;
@@ -400,7 +404,7 @@ export struct HomePage {
     const playable: boolean = ratio >= 0.6;
     if (playable && idx < 0) {
       this.visibleVideos.push(tid);
-      if (!this.listScrolling) {
+      if (!this.listScrolling && this.autoplayFeed) {
         this.startPlay(tid);
       }
     } else if (!playable && idx >= 0) {
@@ -408,6 +412,13 @@ export struct HomePage {
       if (this.playingTid === tid) {
         this.playingTid = '';
       }
+    }
+  }
+
+  /** 关闭"信息流自动播放"时立刻停掉正在播的视频 */
+  onAutoplayChanged(): void {
+    if (!this.autoplayFeed && this.playingTid.length > 0) {
+      this.playingTid = '';
     }
   }
 
@@ -440,7 +451,7 @@ export struct HomePage {
   /** 滚动停止：从当前可见视频帖中择一自动播放 */
   private onFeedScrollStop(): void {
     this.listScrolling = false;
-    if (this.playingTid.length === 0 && this.visibleVideos.length > 0) {
+    if (this.autoplayFeed && this.playingTid.length === 0 && this.visibleVideos.length > 0) {
       this.startPlay(this.visibleVideos[0]);
     }
   }
@@ -1168,6 +1179,10 @@ export struct HomePage {
       // 落在视频静音按钮上：只切静音，不进帖子
       return false;
     }
+    if (this.videoTapPressed) {
+      // 落在视频播放按钮上（自动播放关闭时手动点播）：只播视频，不进帖子
+      return false;
+    }
     return !this.itemMoved && !this.scrollArmed && (Date.now() - this.pressStartTs) < 400;
   }
 
@@ -1527,6 +1542,21 @@ export struct HomePage {
           .justifyContent(FlexAlign.Center)
           .backgroundColor('#59000000')
           .borderRadius(23)
+          .onTouch((e: TouchEvent) => {
+            if (e.type === TouchType.Down) {
+              this.videoTapPressed = true;
+            } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+              setTimeout(() => {
+                this.videoTapPressed = false;
+              }, 0);
+            }
+          })
+          .onClick(() => {
+            // 自动播放关闭时，点封面播放按钮手动起播（不进帖子）
+            if (row.videoUrl.length > 0) {
+              this.startPlay(row.tid);
+            }
+          })
         }
       }
       .width('100%')
