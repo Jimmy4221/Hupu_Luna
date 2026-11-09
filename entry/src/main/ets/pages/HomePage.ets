@@ -138,6 +138,12 @@ export struct HomePage {
   private lightReplyRequests: string[] = [];
   private lightReplyQueue: string[] = [];
   private lightReplyWorkerActive: boolean = false;
+  /** Search2 marks video posts but omits their signed play URL; enrich visible video cards lazily. */
+  private videoDetailRequests: string[] = [];
+  private videoDetailQueue: string[] = [];
+  private videoDetailWorkerActive: boolean = false;
+  private videoDetailCurrentTid: string = '';
+  private playAfterVideoLoadTid: string = '';
   /** 官方频道连续无收获页数（用于判定官方内容到底） */
   private officialDryPages: number = 0;
   /** 当前视频是否静音（默认静音，切换视频时复位） */
@@ -317,7 +323,7 @@ export struct HomePage {
     this.processLightReplyQueue();
   }
 
-  /** Fetch the brightest first-page reply lazily for visible LoL feed cards. */
+  /** Backfill highlighted replies when the selected feed source omits its preview. */
   private async processLightReplyQueue(): Promise<void> {
     if (this.lightReplyWorkerActive) return;
     this.lightReplyWorkerActive = true;
@@ -330,7 +336,7 @@ export struct HomePage {
         for (const item of result.items) {
           if (item.content.length > 0 && (best === null || item.light > best.light)) best = item;
         }
-        if (best !== null && this.activeChannelId === 'lol') {
+        if (best !== null) {
           const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
           if (index >= 0) {
             const nextRows: FeedRow[] = this.rows.slice();
@@ -339,11 +345,72 @@ export struct HomePage {
             nextRows[index].lightReplyCount = best.light;
             this.rows = nextRows;
           }
+        } else {
+          // Let a recycled card retry after a transient PC page/WAF failure.
+          const requestedIndex: number = this.lightReplyRequests.indexOf(tid);
+          if (requestedIndex >= 0) this.lightReplyRequests.splice(requestedIndex, 1);
         }
       } catch (e) {
+        const requestedIndex: number = this.lightReplyRequests.indexOf(tid);
+        if (requestedIndex >= 0) this.lightReplyRequests.splice(requestedIndex, 1);
       }
     }
     this.lightReplyWorkerActive = false;
+  }
+
+  private requestVideoDetail(tid: string, playWhenReady: boolean = false): void {
+    if (playWhenReady) this.playAfterVideoLoadTid = tid;
+    if (tid.length === 0) return;
+    const requestedIndex: number = this.videoDetailRequests.indexOf(tid);
+    if (requestedIndex >= 0) {
+      if (playWhenReady) {
+        const row: FeedRow | undefined = this.rows.find((item: FeedRow) => item.tid === tid);
+        if (row !== undefined && row.videoUrl.length > 0) {
+          this.startPlay(tid);
+          this.playAfterVideoLoadTid = '';
+        } else if (this.videoDetailCurrentTid !== tid && this.videoDetailQueue.indexOf(tid) < 0) {
+          this.videoDetailQueue.push(tid);
+          this.processVideoDetailQueue();
+        }
+      }
+      return;
+    }
+    this.videoDetailRequests.push(tid);
+    this.videoDetailQueue.push(tid);
+    this.processVideoDetailQueue();
+  }
+
+  private async processVideoDetailQueue(): Promise<void> {
+    if (this.videoDetailWorkerActive) return;
+    this.videoDetailWorkerActive = true;
+    while (this.videoDetailQueue.length > 0) {
+      const tid: string = this.videoDetailQueue.shift() ?? '';
+      if (tid.length === 0) continue;
+      this.videoDetailCurrentTid = tid;
+      let playable: boolean = false;
+      try {
+        const detail = await HupuApi.getThreadDetail(tid);
+        const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
+        if (index >= 0 && detail.videoUrl.length > 0) {
+          const nextRows: FeedRow[] = this.rows.slice();
+          nextRows[index].isVideo = true;
+          nextRows[index].videoUrl = detail.videoUrl;
+          if (nextRows[index].cover.length === 0) nextRows[index].cover = detail.videoCover;
+          if (detail.videoWidth > 0) nextRows[index].coverW = detail.videoWidth;
+          if (detail.videoHeight > 0) nextRows[index].coverH = detail.videoHeight;
+          this.rows = nextRows;
+          playable = true;
+          if (this.playAfterVideoLoadTid === tid) {
+            this.startPlay(tid);
+            this.playAfterVideoLoadTid = '';
+          }
+        }
+      } catch (e) {
+      }
+      if (!playable && this.playAfterVideoLoadTid === tid) this.playAfterVideoLoadTid = '';
+      this.videoDetailCurrentTid = '';
+    }
+    this.videoDetailWorkerActive = false;
   }
 
   /** 单条映射（loadMore 追加时复用） */
@@ -1649,6 +1716,8 @@ export struct HomePage {
             // 自动播放关闭时，点封面播放按钮手动起播（不进帖子）
             if (row.videoUrl.length > 0) {
               this.startPlay(row.tid);
+            } else {
+              this.requestVideoDetail(row.tid, true);
             }
           })
         }
@@ -2122,9 +2191,12 @@ export struct HomePage {
                 .padding({ left: Spacing.lg, right: Spacing.lg })
                 .backgroundColor($r('app.color.bg_card'))
                 .onAppear(() => {
-                  if (this.activeChannelId === 'lol' && row.lightReplyContent.length === 0) {
+                  const isReplyPreviewFeed: boolean = this.activeChannelId === 'lol'
+                    || this.activeChannelId === 'recommend';
+                  if (isReplyPreviewFeed && row.lightReplyContent.length === 0 && row.replies > 0) {
                     this.requestLightReplyPreview(row.tid);
                   }
+                  if (row.isVideo && row.videoUrl.length === 0) this.requestVideoDetail(row.tid);
                 })
                 .onTouch((e: TouchEvent) => {
                   if (e.type === TouchType.Down) {

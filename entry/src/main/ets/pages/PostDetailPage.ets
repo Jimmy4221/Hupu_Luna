@@ -414,13 +414,16 @@ export struct PostDetailPage {
   }
 
   private async loadReplies(): Promise<void> {
+    this.replyState = LoadState.Loading;
     try {
       const res = await HupuApi.getReplies(this.tid, 1);
       this.replies = res.items;
       this.replyTotal = res.totalCount;
       this.replyPage = 1;
       this.hasMoreReplies = res.hasMore;
-      this.replyState = this.replies.length > 0 ? LoadState.Ready : LoadState.Empty;
+      this.replyState = this.replies.length > 0
+        ? LoadState.Ready
+        : (res.totalCount > 0 || this.detail.replies > 0 ? LoadState.Error : LoadState.Empty);
     } catch (e) {
       this.replyState = LoadState.Error;
     }
@@ -1003,6 +1006,11 @@ export struct PostDetailPage {
                   .width(24)
                   .height(24)
                   .color($r('app.color.text_tertiary'))
+              } else if (this.replyState === LoadState.Error) {
+                Text('回复暂时没加载出来，点击重试')
+                  .fontSize(12)
+                  .fontColor($r('app.color.brand_primary'))
+                  .onClick(() => this.loadReplies())
               } else if (this.hasMoreReplies) {
                 Text('上拉加载更多回复')
                   .fontSize(12)

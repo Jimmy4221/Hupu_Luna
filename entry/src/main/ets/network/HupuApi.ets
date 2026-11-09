@@ -332,6 +332,11 @@ interface SearchItemDto {
   title?: string;
   content?: string;
   picture?: string;
+  img?: string;
+  header?: string;
+  isMovie?: number | boolean;
+  movie?: boolean;
+  duration?: string;
   username?: string;
   forum_name?: string;
   /** 板块 fid（官方资讯历史按此过滤到目标频道） */
@@ -842,11 +847,14 @@ export class HupuApi {
       // 标题含搜索高亮标签（<font color=...>），清洗后使用
       item.title = htmlToText(d.title ?? '');
       item.userName = d.username ?? '';
+      item.userHeader = d.header ?? '';
       item.topicName = d.forum_name ?? '';
       item.fid = d.fid ?? 0;
       item.replies = d.replies ?? 0;
-      item.recommendCount = d.lights ?? 0;
-      item.coverUrl = d.picture ?? '';
+      item.recommendCount = (d.lights ?? 0) > 0 ? d.lights ?? 0 : d.recNum ?? 0;
+      item.coverUrl = (d.picture ?? '').length > 0 ? d.picture ?? '' : d.img ?? '';
+      item.isVideo = d.isMovie === 1 || d.isMovie === true || d.movie === true;
+      item.videoDuration = d.duration ?? '';
       // 与资讯页首屏时间格式（MM-DD HH:MM）保持一致，避免两段展示风格割裂
       item.time = HupuApi.formatDateTime(d.addtime ?? 0);
       result.push(item);

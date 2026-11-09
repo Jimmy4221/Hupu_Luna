@@ -3,6 +3,22 @@ import { SessionManager } from './SessionManager';
 
 const LPL_DATA: string = 'https://lpl.qq.com/web201612/data/LOL_MATCH2_MATCH_HOMEPAGE_BMATCH_LIST_';
 const HUPU_BPL: string = 'https://games.mobileapi.hupu.com/1/8.2.99/bplcommentapi/bpl';
+const LPL_TEAM_LIST: string = 'https://lpl.qq.com/web201612/data/LOL_MATCH2_TEAM_LIST.js';
+
+interface LolTeamDto {
+  TeamLogo?: string;
+  TeamName?: string;
+  TeamShortName?: string;
+}
+
+interface LolTeamListDto {
+  msg?: Record<string, LolTeamDto>;
+}
+
+interface LolRatingCommentDto {
+  commentContent?: string;
+  lightCount?: number;
+}
 
 class LolScoreBizKey {
   outBizType: string = '';
@@ -22,6 +38,10 @@ export class LolFixture {
   teams: string = '';
   teamA: string = '';
   teamB: string = '';
+  teamAId: string = '';
+  teamBId: string = '';
+  teamALogo: string = '';
+  teamBLogo: string = '';
   scoreA: string = '';
   scoreB: string = '';
   matchTime: string = '';
@@ -38,6 +58,8 @@ export class LolMatchNode {
   teamB: string = '';
   teamAId: string = '';
   teamBId: string = '';
+  teamALogo: string = '';
+  teamBLogo: string = '';
   scoreA: string = '';
   scoreB: string = '';
   event: string = '';
@@ -64,6 +86,11 @@ export class LolPlayerScore {
   assists: number = 0;
   champion: string = '';
   avatar: string = '';
+  ratingDistribution: number[] = [];
+  commentCount: number = 0;
+  featuredComment: string = '';
+  featuredCommentLights: number = 0;
+  label: string = '';
 }
 
 function textOf(value: Object | string | number | boolean | null | undefined): string {
@@ -80,7 +107,12 @@ function numberOf(value: Object | string | number | boolean | null | undefined):
   return Number.isFinite(n) ? n : 0;
 }
 
-function mapFixture(raw: Record<string, Object>, eventId: string): LolFixture {
+function logoUrl(value: string): string {
+  if (value.indexOf('//') === 0) return `https:${value}`;
+  return value;
+}
+
+function mapFixture(raw: Record<string, Object>, eventId: string, logos: Map<string, string>): LolFixture {
   const item: LolFixture = new LolFixture();
   item.matchId = textOf(raw['bMatchId']);
   item.eventId = eventId;
@@ -89,6 +121,10 @@ function mapFixture(raw: Record<string, Object>, eventId: string): LolFixture {
   const parts: string[] = item.teams.split(' vs ');
   item.teamA = textOf(raw['TeamShortNameA']) || (parts.length > 0 ? parts[0].trim() : '');
   item.teamB = textOf(raw['TeamShortNameB']) || (parts.length > 1 ? parts[1].trim() : '');
+  item.teamAId = textOf(raw['TeamA']);
+  item.teamBId = textOf(raw['TeamB']);
+  item.teamALogo = logos.get(item.teamAId) ?? '';
+  item.teamBLogo = logos.get(item.teamBId) ?? '';
   item.scoreA = textOf(raw['ScoreA']);
   item.scoreB = textOf(raw['ScoreB']);
   item.matchTime = textOf(raw['MatchDate']);
@@ -102,11 +138,32 @@ function mapFixture(raw: Record<string, Object>, eventId: string): LolFixture {
 /** Public LoL schedules plus Hupu's public esports rating tree. */
 export class LolEsportsApi {
   private static cachedMatches: LolMatchNode[] = [];
+  private static cachedTeamLogos: Map<string, string> = new Map<string, string>();
+
+  private static async getTeamLogos(): Promise<Map<string, string>> {
+    if (LolEsportsApi.cachedTeamLogos.size > 0) return LolEsportsApi.cachedTeamLogos;
+    try {
+      const raw: string = await HttpManager.get(LPL_TEAM_LIST);
+      const eq: number = raw.indexOf('=');
+      let jsonText: string = eq >= 0 ? raw.substring(eq + 1).trim() : raw.trim();
+      if (jsonText.endsWith(';')) jsonText = jsonText.substring(0, jsonText.length - 1);
+      const root: LolTeamListDto = JSON.parse(jsonText) as LolTeamListDto;
+      const rows: Record<string, LolTeamDto> = root.msg ?? {};
+      for (const id of Object.keys(rows)) {
+        const url: string = logoUrl(rows[id].TeamLogo ?? '');
+        if (url.length > 0) LolEsportsApi.cachedTeamLogos.set(id, url);
+      }
+    } catch (e) {
+      // Keep the schedule usable if the auxiliary logo feed is unavailable.
+    }
+    return LolEsportsApi.cachedTeamLogos;
+  }
 
   /** 2026 LPL, MSI and Worlds schedule files. */
   static async getFixtures(): Promise<LolFixture[]> {
     const eventIds: string[] = ['237', '239', '246'];
     const all: LolFixture[] = [];
+    const logos: Map<string, string> = await LolEsportsApi.getTeamLogos();
     for (const eventId of eventIds) {
       try {
         const raw: string = await HttpManager.get(`${LPL_DATA}${eventId}.js`);
@@ -116,7 +173,7 @@ export class LolEsportsApi {
         const fixtureRows: Object[] = rows as Object[];
         for (let i: number = 0; i < fixtureRows.length; i++) {
           const row: Record<string, Object> = fixtureRows[i] as Record<string, Object>;
-          const fixture: LolFixture = mapFixture(row, eventId);
+          const fixture: LolFixture = mapFixture(row, eventId, logos);
           if (fixture.matchId.length > 0) all.push(fixture);
         }
       } catch (e) {
@@ -146,9 +203,11 @@ export class LolEsportsApi {
       match.title = textOf(detail['name']);
       match.teamA = textOf(info['homeTeamName']);
       match.teamB = textOf(info['awayTeamName']);
-      // 子选手节点用阵营编号 1/2（不是比赛节点上的俱乐部 bizId）。
-      match.teamAId = '1';
-      match.teamBId = '2';
+      // 选手节点的 teamId 使用赛事俱乐部 ID；从比赛元数据取值才能正确分组。
+      match.teamAId = textOf(info['homeTeamId']);
+      match.teamBId = textOf(info['awayTeamId']);
+      match.teamALogo = logoUrl(textOf(info['homeTeamLogo']));
+      match.teamBLogo = logoUrl(textOf(info['awayTeamLogo']));
       match.scoreA = textOf(info['homeTeamScore']);
       match.scoreB = textOf(info['awayTeamScore']);
       match.event = textOf(info['competitionTypeCn']);
@@ -166,11 +225,10 @@ export class LolEsportsApi {
     if (LolEsportsApi.cachedMatches.length > 0) return LolEsportsApi.cachedMatches;
     const found: LolMatchNode[] = [];
     const ids: string[] = [];
-    // Hupu has no public LoL match index. These compact bizId windows cover the
-    // 2026 LPL finish and the 2026 international events; future ids are probed
-    // beyond the current Worlds block to include the closing matches.
+    // Hupu has no public LoL match index. Probe the 2026 LPL and international
+    // event ID windows, including the late Worlds knockout match nodes.
     for (let id: number = 4101; id <= 4225; id++) ids.push(`${id}`);
-    for (let id: number = 4501; id <= 4560; id++) ids.push(`${id}`);
+    for (let id: number = 4501; id <= 4700; id++) ids.push(`${id}`);
     for (let start: number = 0; start < ids.length; start += 20) {
       const batch: string[] = ids.slice(start, start + 20);
       const results: (LolMatchNode | null)[] = await Promise.all(batch.map((id: string) => LolEsportsApi.getMatch(id)));
@@ -224,6 +282,23 @@ export class LolEsportsApi {
       const champion: string = textOf(info['auxiliaryPic']);
       score.champion = champion.indexOf('6488fab0a2d3') >= 0 ? '' : champion;
       score.avatar = textOf(node['image']);
+      score.commentCount = numberOf(row['commentCount']);
+      const distribution: Record<string, Object> = (row['scoreDistribution'] ?? {}) as Record<string, Object>;
+      score.ratingDistribution = [
+        numberOf(distribution['2']), numberOf(distribution['4']), numberOf(distribution['6']),
+        numberOf(distribution['8']), numberOf(distribution['10'])
+      ];
+      const hotComments: Object = row['hotCommentModels'] as Object;
+      if (Array.isArray(hotComments) && hotComments.length > 0) {
+        const hot: LolRatingCommentDto = hotComments[0] as LolRatingCommentDto;
+        score.featuredComment = hot.commentContent ?? '';
+        score.featuredCommentLights = hot.lightCount ?? 0;
+      }
+      const labels: Object = info['label'] as Object;
+      if (Array.isArray(labels) && labels.length > 0) {
+        const first: Record<string, Object> = labels[0] as Record<string, Object>;
+        score.label = textOf(first['text']);
+      }
       if (score.kind === 'player' || score.kind === 'coach') out.push(score);
     }
     return out;

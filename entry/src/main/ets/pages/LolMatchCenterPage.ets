@@ -63,7 +63,7 @@ export struct LolMatchCenterPage {
   }
 
   private normalizedTeam(name: string): string {
-    return name.toLowerCase().replace(/\s+/g, '').trim();
+    return name.toLowerCase().replace(/[^a-z0-9]/g, '').trim();
   }
 
   private matchForFixture(fixture: LolFixture): LolMatchNode | null {
@@ -256,13 +256,26 @@ export struct LolMatchCenterPage {
         Text(item.bo).fontSize(11).fontColor($r('app.color.text_tertiary'))
       }
       Row() {
-        Text(item.teamA.length > 0 ? item.teamA : '待定')
-          .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        Row({ space: 8 }) {
+          if (item.teamALogo.length > 0) {
+            ImageKnifeComponent({ imageKnifeOption: { loadSrc: item.teamALogo, objectFit: ImageFit.Contain } })
+              .width(30).height(30)
+          }
+          Text(item.teamA.length > 0 ? item.teamA : '待定')
+            .fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.layoutWeight(1).alignItems(VerticalAlign.Center)
         Text(this.fixtureStatus(item))
-          .fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.brand_primary'))
-        Text(item.teamB.length > 0 ? item.teamB : '待定')
-          .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          .textAlign(TextAlign.End)
+          .fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.brand_primary'))
+        Row({ space: 8 }) {
+          Text(item.teamB.length > 0 ? item.teamB : '待定')
+            .fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (item.teamBLogo.length > 0) {
+            ImageKnifeComponent({ imageKnifeOption: { loadSrc: item.teamBLogo, objectFit: ImageFit.Contain } })
+              .width(30).height(30)
+          }
+        }.layoutWeight(1).justifyContent(FlexAlign.End).alignItems(VerticalAlign.Center)
       }
       Text(item.matchTime)
         .fontSize(11).fontColor($r('app.color.text_tertiary'))
@@ -284,9 +297,23 @@ export struct LolMatchCenterPage {
       Text(`${match.event} · ${match.stage}`)
         .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
       Row() {
-        Text(match.teamA).fontSize(15).fontColor($r('app.color.text_primary')).layoutWeight(1)
-        Text(`${match.scoreA} : ${match.scoreB}`).fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.brand_primary'))
-        Text(match.teamB).fontSize(15).fontColor($r('app.color.text_primary')).layoutWeight(1).textAlign(TextAlign.End)
+        Row({ space: 6 }) {
+          if (match.teamALogo.length > 0) {
+            ImageKnifeComponent({ imageKnifeOption: { loadSrc: match.teamALogo, objectFit: ImageFit.Contain } })
+              .width(28).height(28)
+          }
+          Text(match.teamA).fontSize(14).fontColor($r('app.color.text_primary'))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.layoutWeight(1)
+        Text(`${match.scoreA} : ${match.scoreB}`).fontSize(15).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_primary'))
+        Row({ space: 6 }) {
+          Text(match.teamB).fontSize(14).fontColor($r('app.color.text_primary'))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (match.teamBLogo.length > 0) {
+            ImageKnifeComponent({ imageKnifeOption: { loadSrc: match.teamBLogo, objectFit: ImageFit.Contain } })
+              .width(28).height(28)
+          }
+        }.layoutWeight(1).justifyContent(FlexAlign.End)
       }
       Text('打开选手评分与对位图 ›').fontSize(11).fontColor($r('app.color.brand_primary')).width('100%')
     }
@@ -294,24 +321,87 @@ export struct LolMatchCenterPage {
     .onClick(() => this.selectMatch(match))
   }
 
+  ratingTotal(p: LolPlayerScore): number {
+    let total: number = 0;
+    for (const value of p.ratingDistribution) total += value;
+    return total;
+  }
+
+  ratingShare(p: LolPlayerScore, index: number): number {
+    const total: number = this.ratingTotal(p);
+    if (total <= 0 || index < 0 || index >= p.ratingDistribution.length) return 0;
+    return p.ratingDistribution[index] * 100 / total;
+  }
+
   @Builder
-  PlayerRow(p: LolPlayerScore, ordinal: number) {
-    Row({ space: 10 }) {
-      Text(`${ordinal + 1}`).fontSize(13).fontColor($r('app.color.text_tertiary')).width(22)
-      if (p.avatar.length > 0) {
-        ImageKnifeComponent({ imageKnifeOption: { loadSrc: p.avatar, objectFit: ImageFit.Cover } })
-          .width(34).height(34).borderRadius(17)
-      }
+  RatingBreakdown(p: LolPlayerScore) {
+    if (this.ratingTotal(p) > 0) {
       Column({ space: 3 }) {
-        Text(p.name).fontSize(14).fontColor($r('app.color.text_primary'))
-        Text(`${p.kills}/${p.deaths}/${p.assists} KDA · ${p.votes} 票`)
-          .fontSize(10).fontColor($r('app.color.text_secondary'))
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Text(p.score.toFixed(1)).fontSize(17).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_primary'))
-      Text('评分/互动').fontSize(10).fontColor($r('app.color.text_secondary')).onClick(() => this.openRating(p))
+        ForEach([0, 1, 2, 3, 4], (idx: number) => {
+          Row({ space: 7 }) {
+            Text(`${(idx + 1) * 2}分`).fontSize(9).fontColor($r('app.color.text_secondary')).width(26)
+            Progress({ value: this.ratingShare(p, idx), total: 100, type: ProgressType.Linear })
+              .color($r('app.color.brand_primary')).layoutWeight(1).height(5)
+            Text(`${this.ratingShare(p, idx).toFixed(1)}%`)
+              .fontSize(9).fontColor($r('app.color.text_tertiary')).width(40).textAlign(TextAlign.End)
+          }.width('100%').alignItems(VerticalAlign.Center)
+        }, (idx: number) => `distribution_${p.bizId}_${idx}`)
+      }.width('100%')
     }
-    .width('100%').padding({ top: 10, bottom: 10, left: Spacing.md, right: Spacing.md })
-    .backgroundColor($r('app.color.bg_card'))
+  }
+
+  @Builder
+  PlayerScoreCard(p: LolPlayerScore, ordinal: number, accent: string) {
+    Column({ space: 9 }) {
+      Row({ space: 10 }) {
+        Text(`${ordinal + 1}`).fontSize(12).fontColor($r('app.color.text_tertiary')).width(18)
+        if (p.avatar.length > 0) {
+          ImageKnifeComponent({ imageKnifeOption: { loadSrc: p.avatar, objectFit: ImageFit.Cover } })
+            .width(48).height(48).borderRadius(8)
+        }
+        Column({ space: 4 }) {
+          Text(p.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+          Text(`${p.kills}/${p.deaths}/${p.assists} K/D/A`)
+            .fontSize(11).fontColor($r('app.color.text_secondary'))
+          if (p.label.length > 0 || p.champion.length > 0) {
+            Row({ space: 5 }) {
+              if (p.champion.length > 0) {
+                ImageKnifeComponent({ imageKnifeOption: { loadSrc: p.champion, objectFit: ImageFit.Cover } })
+                  .width(22).height(22).borderRadius(5)
+              }
+              if (p.label.length > 0) {
+                Text(p.label).fontSize(10).fontColor($r('app.color.brand_primary'))
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }.alignItems(VerticalAlign.Center)
+          }
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Column({ space: 2 }) {
+          Text(p.score.toFixed(1)).fontSize(22).fontWeight(FontWeight.Bold).fontColor(accent)
+          Text(`${p.votes > 0 ? `${p.votes} 人评分` : '暂无评分'}${p.commentCount > 0 ? ` · ${p.commentCount} 评论` : ''}`)
+            .fontSize(9).fontColor($r('app.color.text_tertiary')).textAlign(TextAlign.End)
+          Text('评分与互动 ›').fontSize(10).fontColor($r('app.color.brand_primary'))
+            .onClick(() => this.openRating(p))
+        }.alignItems(HorizontalAlign.End)
+      }.width('100%')
+      this.RatingBreakdown(p)
+      if (p.featuredComment.length > 0) {
+        Row({ space: 5 }) {
+          Text('亮评').fontSize(10).fontColor($r('app.color.brand_primary'))
+          Text(`“${p.featuredComment}”`).fontSize(11).fontColor($r('app.color.text_secondary'))
+            .layoutWeight(1).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (p.featuredCommentLights > 0) {
+            Text(`${p.featuredCommentLights} 亮`).fontSize(9).fontColor($r('app.color.text_tertiary'))
+          }
+        }.width('100%')
+      }
+      Row() {
+        Text('快速评分').fontSize(10).fontColor($r('app.color.text_tertiary')).layoutWeight(1)
+        this.RateButtons(p)
+      }.width('100%').alignItems(VerticalAlign.Center)
+    }
+    .width('100%').padding(Spacing.md)
+    .backgroundColor($r('app.color.bg_card')).borderRadius(Radius.md)
   }
 
   @Builder
@@ -325,14 +415,42 @@ export struct LolMatchCenterPage {
       }.width('100%')
     } else {
       Column({ space: 10 }) {
-        Row() {
-          Text(`${this.selectedMatch.teamA} ${this.selectedMatch.scoreA} : ${this.selectedMatch.scoreB} ${this.selectedMatch.teamB}`)
-            .fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
-          Text('更换').fontSize(12).fontColor($r('app.color.brand_primary')).onClick(() => {
-            this.selectedMatch = null;
-            this.scores = [];
-          })
+        Column({ space: 8 }) {
+          Text(`${this.selectedMatch.event} · ${this.selectedMatch.stage}`)
+            .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+          Row() {
+            Row({ space: 7 }) {
+              if (this.selectedMatch.teamALogo.length > 0) {
+                ImageKnifeComponent({ imageKnifeOption: { loadSrc: this.selectedMatch.teamALogo, objectFit: ImageFit.Contain } })
+                  .width(34).height(34)
+              }
+              Text(this.selectedMatch.teamA).fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary')).maxLines(1)
+            }.layoutWeight(1)
+            Column({ space: 1 }) {
+              Text(`${this.selectedMatch.scoreA} : ${this.selectedMatch.scoreB}`)
+                .fontSize(22).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_primary'))
+              Text('系列赛').fontSize(9).fontColor($r('app.color.text_tertiary'))
+            }.alignItems(HorizontalAlign.Center)
+            Row({ space: 7 }) {
+              Text(this.selectedMatch.teamB).fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary')).maxLines(1)
+              if (this.selectedMatch.teamBLogo.length > 0) {
+                ImageKnifeComponent({ imageKnifeOption: { loadSrc: this.selectedMatch.teamBLogo, objectFit: ImageFit.Contain } })
+                  .width(34).height(34)
+              }
+            }.layoutWeight(1).justifyContent(FlexAlign.End)
+          }.width('100%')
         }
+        .width('100%').padding(Spacing.md).backgroundColor($r('app.color.bg_card')).borderRadius(Radius.md)
+        Row() {
+          Text('更换比赛').fontSize(11).fontColor($r('app.color.brand_primary')).layoutWeight(1)
+            .onClick(() => {
+              this.selectedMatch = null;
+              this.scores = [];
+            })
+          Text(this.selectedGame?.name ?? '').fontSize(11).fontColor($r('app.color.text_secondary'))
+        }.width('100%')
         Scroll() {
           Row({ space: 8 }) {
             ForEach(this.games, (g: LolGameNode) => {
@@ -343,43 +461,40 @@ export struct LolMatchCenterPage {
             }, (g: LolGameNode) => `lolgame_${g.bizId}`)
           }
         }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-        Row({ space: 8 }) {
-          Column({ space: 6 }) {
-            Text(this.selectedMatch.teamA).fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_secondary'))
+        if (this.detailLoading) {
+          Row({ space: 8 }) {
+            LoadingProgress().width(20).height(20).color($r('app.color.brand_primary'))
+            Text('正在加载本局评分').fontSize(12).fontColor($r('app.color.text_secondary'))
+          }.width('100%').justifyContent(FlexAlign.Center).padding(Spacing.md)
+        } else if (this.scores.length === 0) {
+          Text('虎扑暂未提供本局选手数据').fontSize(12).fontColor($r('app.color.text_secondary'))
+            .width('100%').textAlign(TextAlign.Center).padding(Spacing.lg)
+        } else {
+          Column({ space: 8 }) {
+            Row({ space: 7 }) {
+              if (this.selectedMatch.teamALogo.length > 0) {
+                ImageKnifeComponent({ imageKnifeOption: { loadSrc: this.selectedMatch.teamALogo, objectFit: ImageFit.Contain } })
+                  .width(24).height(24)
+              }
+              Text(this.selectedMatch.teamA).fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor('#F05B68')
+            }.width('100%').alignItems(VerticalAlign.Center)
             ForEach(this.teamScores(this.selectedMatch.teamAId), (p: LolPlayerScore, i: number) => {
-              Row() {
-                if (p.champion.length > 0) {
-                  ImageKnifeComponent({ imageKnifeOption: { loadSrc: p.champion, objectFit: ImageFit.Cover } })
-                    .width(24).height(24).borderRadius(12)
-                }
-                Column({ space: 2 }) {
-                  Text(p.name).fontSize(11).fontColor($r('app.color.text_primary'))
-                  Text(`${p.kills}/${p.deaths}/${p.assists}`).fontSize(9).fontColor($r('app.color.text_secondary'))
-                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                Text(p.score.toFixed(1)).fontSize(14).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_primary'))
-              }.padding(8).backgroundColor($r('app.color.bg_card')).borderRadius(8)
-              this.RateButtons(p)
+              this.PlayerScoreCard(p, i, '#F05B68')
             }, (p: LolPlayerScore) => `left_${p.bizId}`)
-          }.layoutWeight(1)
-          Column({ space: 6 }) {
-            Text(this.selectedMatch.teamB).fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_secondary'))
+            Row({ space: 7 }) {
+              if (this.selectedMatch.teamBLogo.length > 0) {
+                ImageKnifeComponent({ imageKnifeOption: { loadSrc: this.selectedMatch.teamBLogo, objectFit: ImageFit.Contain } })
+                  .width(24).height(24)
+              }
+              Text(this.selectedMatch.teamB).fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor('#6F9FE8')
+            }.width('100%').alignItems(VerticalAlign.Center).margin({ top: 8 })
             ForEach(this.teamScores(this.selectedMatch.teamBId), (p: LolPlayerScore, i: number) => {
-              Row() {
-                Text(p.score.toFixed(1)).fontSize(14).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_primary'))
-                Column({ space: 2 }) {
-                  Text(p.name).fontSize(11).fontColor($r('app.color.text_primary')).textAlign(TextAlign.End)
-                  Text(`${p.kills}/${p.deaths}/${p.assists}`).fontSize(9).fontColor($r('app.color.text_secondary')).textAlign(TextAlign.End)
-                }.layoutWeight(1).alignItems(HorizontalAlign.End)
-                if (p.champion.length > 0) {
-                  ImageKnifeComponent({ imageKnifeOption: { loadSrc: p.champion, objectFit: ImageFit.Cover } })
-                    .width(24).height(24).borderRadius(12)
-                }
-              }.padding(8).backgroundColor($r('app.color.bg_card')).borderRadius(8)
-              this.RateButtons(p)
+              this.PlayerScoreCard(p, i, '#6F9FE8')
             }, (p: LolPlayerScore) => `right_${p.bizId}`)
-          }.layoutWeight(1)
-        }.alignItems(VerticalAlign.Top).width('100%')
-        Text('点击选手查看 Hupu 官方评分与比赛中评论。').fontSize(11).fontColor($r('app.color.text_tertiary'))
+          }.width('100%')
+        }
         Text('局中表态与讨论 ›').fontSize(12).fontColor($r('app.color.brand_primary'))
           .onClick(() => this.openMatchInteraction())
       }.width('100%')
@@ -397,7 +512,8 @@ export struct LolMatchCenterPage {
         }.width('100%').backgroundColor($r('app.color.bg_card'))
         if (this.tab === 0) {
           if (this.state === LoadState.Loading) {
-            Column() { LoadingProgress() }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+            Column() { LoadingProgress().width(28).height(28).color($r('app.color.brand_primary')) }
+              .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
           } else if (this.state === LoadState.Error || this.state === LoadState.Empty) {
             Column({ space: 12 }) {
               Text(this.state === LoadState.Error ? '赛程加载失败' : '暂无赛程').fontSize(14).fontColor($r('app.color.text_secondary'))
@@ -412,7 +528,8 @@ export struct LolMatchCenterPage {
           }
         } else if (this.tab === 1) {
           if (this.boardLoading) {
-            Column() { LoadingProgress() }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+            Column() { LoadingProgress().width(28).height(28).color($r('app.color.brand_primary')) }
+              .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
           } else if (this.leaderboard.length === 0) {
             Column({ space: 8 }) {
               Text('需要读取近期 Hupu 选手评分数据').fontSize(13).fontColor($r('app.color.text_secondary'))
@@ -436,7 +553,8 @@ export struct LolMatchCenterPage {
           }
         } else {
           if (this.detailLoading && this.matches.length === 0 && this.selectedMatch === null) {
-            Column() { LoadingProgress() }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+            Column() { LoadingProgress().width(28).height(28).color($r('app.color.brand_primary')) }
+              .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
           } else {
             Scroll() { this.MatchupDiagram() }
               .width('100%').layoutWeight(1).padding(Spacing.md).scrollBar(BarState.Off)
