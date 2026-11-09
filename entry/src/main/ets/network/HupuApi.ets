@@ -764,6 +764,27 @@ export class HupuApi {
     return result;
   }
 
+  /** PC 英雄联盟区使用 slug 路由，而非数字 topicId。 */
+  static async getForumThreadsBySlug(slug: string, page: number): Promise<ThreadListPage> {
+    const safeSlug: string = encodeURIComponent(slug);
+    const suffix: string = page <= 1 ? '' : `-${page}`;
+    const html: string = await HttpManager.get(`${PC_BASE}/${safeSlug}${suffix}`, DESKTOP_UA);
+    const result: ThreadListPage = new ThreadListPage();
+    if (html.indexOf(WAF_MARK) >= 0) {
+      throw new Error('访问过于频繁，请稍后再试');
+    }
+    const chunks: string[] = html.split(ITEM_MARK);
+    for (let i: number = 1; i < chunks.length; i++) {
+      const item: ThreadListItem | null = HupuApi.parseForumItem(chunks[i]);
+      if (item !== null) {
+        result.items.push(item);
+      }
+    }
+    result.hasMore = result.items.length > 0;
+    result.cursor = '';
+    return result;
+  }
+
   /** 解析 PC 话题页单条帖子（正则；字段缺失不阻断整条） */
   private static parseForumItem(block: string): ThreadListItem | null {
     const head = REG_TITLE.exec(block);

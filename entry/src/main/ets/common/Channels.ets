@@ -100,6 +100,8 @@ const ALL_LIST: ChannelDef[] = [
   def('auto', '汽车区', ChannelKind.TOPIC, 278, '', '', '112474163'),
   def('f1', 'F1赛车区', ChannelKind.TOPIC, 241, '', '', '93956731'),
   def('game', '游戏区', ChannelKind.TOPIC, 86, '', '', '14513993'),
+  // PC 英雄联盟区使用独立 slug 路由（/lol），由 HupuApi.getForumThreadsBySlug 加载。
+  def('lol', '英雄联盟', ChannelKind.TOPIC),
   def('valorant', '无畏契约', ChannelKind.TOPIC, 803, '', '', '94991862,17215809'),
   def('honor', '王者荣耀', ChannelKind.TOPIC, 88, '', '', '94991862'),
   // 无官方号覆盖（实测无对应账号）：保留个人帖子流

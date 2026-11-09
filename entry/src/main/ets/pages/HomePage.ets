@@ -564,7 +564,9 @@ export struct HomePage {
         newPage = 1;
       } else if (ch.kind === ChannelKind.TOPIC) {
         // 话题频道：PC 站分页流（支持无限滚动）
-        const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, 1);
+        const res: ThreadListPage = ch.id === 'lol'
+          ? await HupuApi.getForumThreadsBySlug('lol', 1)
+          : await HupuApi.getForumThreads(ch.topicId, 1);
         newRows = this.mapThreads(res.items, false);
         newCursor = '';
         newHasMore = res.hasMore;
@@ -926,7 +928,10 @@ export struct HomePage {
         this.hasMore = res.hasMore;
       } else {
         // 普通话题频道：PC 站分页（第 N 页 = /{topicId}-{N}）
-        const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, this.pageIndex + 1);
+        const nextPage: number = this.pageIndex + 1;
+        const res: ThreadListPage = ch.id === 'lol'
+          ? await HupuApi.getForumThreadsBySlug('lol', nextPage)
+          : await HupuApi.getForumThreads(ch.topicId, nextPage);
         if (seq !== this.loadSeq) {
           return;
         }
