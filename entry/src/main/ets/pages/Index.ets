@@ -18,6 +18,7 @@ import { UserSpacePage } from './UserSpacePage';
 import { CreateThreadPage } from './CreateThreadPage';
 import { LiveWebPage } from './LiveWebPage';
 import { LolMatchCenterPage } from './LolMatchCenterPage';
+import { LolPlayerRatingPage } from './LolPlayerRatingPage';
 import { RouteName } from '../common/Theme';
 import { hapticTap } from '../common/Haptics';
 import { SessionManager, HupuUserInfo } from '../network/SessionManager';
@@ -117,6 +118,8 @@ struct Index {
       LiveWebPage({ param: this.pageStack.getParamByName(RouteName.LIVE_WEB)[0] as string })
     } else if (name === RouteName.LOL_MATCH_CENTER) {
       LolMatchCenterPage()
+    } else if (name === RouteName.LOL_PLAYER_RATING) {
+      LolPlayerRatingPage({ param: this.pageStack.getParamByName(RouteName.LOL_PLAYER_RATING)[0] as string })
     } else {
       Column({ space: 8 }) {
         Text(name)

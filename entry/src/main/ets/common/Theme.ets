@@ -42,4 +42,5 @@ export class RouteName {
   static readonly CREATE_THREAD: string = 'CreateThread';
   static readonly LIVE_WEB: string = 'LiveWeb';
   static readonly LOL_MATCH_CENTER: string = 'LolMatchCenter';
+  static readonly LOL_PLAYER_RATING: string = 'LolPlayerRating';
 }
