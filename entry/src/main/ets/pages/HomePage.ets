@@ -36,7 +36,7 @@ class FeedRow {
   pics: string[] = [];
   isVideo: boolean = false;
   videoDur: string = '';
-  /** true = 官方大卡样式（仅推荐频道） */
+  /** true = rich media card style (recommend and LoL feeds) */
   officialCard: boolean = false;
   /** 视频直连播放地址（推荐流自动播放用） */
   videoUrl: string = '';
@@ -124,6 +124,8 @@ export struct HomePage {
   @State enterOffsetX: number = 0;
   /** 当前自动播放的视频帖 tid（推荐流；空=无） */
   @State playingTid: string = '';
+  /** Controller shared by the single active feed video, including fullscreen playback. */
+  private feedVideoController: VideoController = new VideoController();
   /** 达到自动播放可见阈值的视频帖（滚动停止后择一播放） */
   private visibleVideos: string[] = [];
   /** 列表滚动中（滚动期间不切换播放，防抖省流） */
@@ -705,12 +707,12 @@ export struct HomePage {
         // 搜索结果带图；配置了历史关键词的频道按 fid 过滤至对应板块。
         if (ch.historyKeyword.length > 0) {
           const batch: TopicSearchBatch = await this.searchTopicBatch(ch, 1, 20);
-          newRows = this.mapThreads(batch.items, false);
+          newRows = this.mapThreads(batch.items, ch.id === 'lol');
           newHasMore = batch.hasMore;
           newPage = batch.page;
         } else {
           const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, 1);
-          newRows = this.mapThreads(res.items, false);
+          newRows = this.mapThreads(res.items, ch.id === 'lol');
           newHasMore = res.hasMore;
         }
         newCursor = '';
@@ -1081,7 +1083,7 @@ export struct HomePage {
           const existing: Set<string> = new Set<string>();
           for (const row of this.rows) existing.add(row.tid);
           const newItems: ThreadListItem[] = batch.items.filter((item: ThreadListItem) => !existing.has(item.tid));
-          this.rows = this.rows.concat(this.mapThreads(newItems, false));
+          this.rows = this.rows.concat(this.mapThreads(newItems, ch.id === 'lol'));
           this.pageIndex = batch.page;
           this.hasMore = batch.hasMore;
         } else {
@@ -1089,7 +1091,7 @@ export struct HomePage {
           if (seq !== this.loadSeq) {
             return;
           }
-          this.rows = this.rows.concat(this.mapThreads(res.items, false));
+          this.rows = this.rows.concat(this.mapThreads(res.items, ch.id === 'lol'));
           this.pageIndex = this.pageIndex + 1;
           this.hasMore = res.hasMore;
         }
@@ -1578,7 +1580,7 @@ export struct HomePage {
         this.VideoBlock(row)
       } else if (row.pics.length >= 3) {
         Row({ space: 4 }) {
-          ForEach(row.pics, (img: string, idx: number) => {
+          ForEach(row.pics.slice(0, 3), (img: string, idx: number) => {
             ImageKnifeComponent({
               imageKnifeOption: {
                 loadSrc: thumbUrl(img, 300),
@@ -1675,7 +1677,7 @@ export struct HomePage {
         if (this.playingTid === row.tid) {
           // Cover 铺满容器：竖屏视频裁切显示中段，消除黑边。
           // controls(false)：去掉原生播放控件（暂停/进度/时间/全屏），对齐官方干净的播放画面
-          Video({ src: row.videoUrl })
+          Video({ src: row.videoUrl, controller: this.feedVideoController })
             .autoPlay(true)
             .muted(this.videoMuted)
             .loop(true)
@@ -1749,6 +1751,24 @@ export struct HomePage {
             })
           }
           Blank()
+          if (this.playingTid === row.tid) {
+            Text('⛶')
+              .fontSize(20)
+              .fontColor(Color.White)
+              .width(30)
+              .height(30)
+              .textAlign(TextAlign.Center)
+              .backgroundColor('#59000000')
+              .borderRadius(15)
+              .onTouch((e: TouchEvent) => {
+                if (e.type === TouchType.Down) {
+                  this.videoTapPressed = true;
+                } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+                  setTimeout(() => this.videoTapPressed = false, 0);
+                }
+              })
+              .onClick(() => this.feedVideoController.requestFullscreen(true))
+          }
           if (row.videoDur.length > 0 && this.playingTid !== row.tid) {
             Text(row.videoDur)
               .fontSize(10)

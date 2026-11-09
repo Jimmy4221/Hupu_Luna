@@ -3,6 +3,7 @@ import { AppNavBar } from '../views/AppNavBar';
 import { Spacing, Radius, RouteName } from '../common/Theme';
 import { ImageKnifeComponent } from '@ohos/imageknife';
 import { SessionManager } from '../network/SessionManager';
+import { ReaderTypography } from '../common/ReaderTypography';
 
 @Component
 export struct LolPlayerRatingPage {
@@ -27,9 +28,19 @@ export struct LolPlayerRatingPage {
   @State repliesLoading: boolean = false;
   @State repliesLoadingMore: boolean = false;
   @State repliesError: string = '';
+  @StorageLink('readerFontScale') readerFontScale: number = 0;
+  @StorageLink('readerFontWeight') readerFontWeight: number = 0;
   private playerBizId: string = '';
   private fallbackName: string = '';
   private fallbackTeam: string = '';
+
+  private readerSize(base: number): number {
+    return ReaderTypography.fontSize(base, this.readerFontScale);
+  }
+
+  private readerWeight(base: number): number {
+    return ReaderTypography.fontWeight(base, this.readerFontWeight);
+  }
 
   aboutToAppear(): void {
     const parts: string[] = this.param.split('||');
@@ -192,10 +203,10 @@ export struct LolPlayerRatingPage {
       Column({ space: 5 }) {
         ForEach([0, 1, 2, 3, 4], (idx: number) => {
           Row({ space: 7 }) {
-            Text(`${(idx + 1) * 2}分`).fontSize(10).fontColor($r('app.color.text_secondary')).width(30)
+            Text(`${(idx + 1) * 2}分`).fontSize(this.readerSize(13)).fontColor($r('app.color.text_secondary')).width(30)
             Progress({ value: this.ratingShare(idx), total: 100, type: ProgressType.Linear })
               .color($r('app.color.brand_primary')).layoutWeight(1).height(6)
-            Text(`${this.ratingShare(idx).toFixed(1)}%`).fontSize(9)
+            Text(`${this.ratingShare(idx).toFixed(1)}%`).fontSize(this.readerSize(12))
               .fontColor($r('app.color.text_tertiary')).width(42).textAlign(TextAlign.End)
           }.width('100%').alignItems(VerticalAlign.Center)
         }, (idx: number) => `lol_dist_${idx}`)
@@ -213,14 +224,14 @@ export struct LolPlayerRatingPage {
         } else {
           Text(this.player.name.length > 0 ? this.player.name.substring(0, 1) : '选')
             .width(68).height(68).borderRadius(12).textAlign(TextAlign.Center)
-            .fontSize(24).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.bg_page'))
+            .fontSize(this.readerSize(26)).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.bg_page'))
         }
         Column({ space: 6 }) {
           Row({ space: 6 }) {
             Text(this.player.name.length > 0 ? this.player.name : this.fallbackName)
-              .fontSize(19).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+              .fontSize(this.readerSize(21)).fontWeight(this.readerWeight(FontWeight.Bold)).fontColor($r('app.color.text_primary'))
             if (this.fallbackTeam.length > 0) {
-              Text(this.fallbackTeam).fontSize(10).fontColor($r('app.color.text_secondary'))
+              Text(this.fallbackTeam).fontSize(this.readerSize(13)).fontColor($r('app.color.text_secondary'))
                 .padding({ left: 7, right: 7, top: 3, bottom: 3 })
                 .backgroundColor($r('app.color.bg_page')).borderRadius(8)
             }
@@ -230,38 +241,38 @@ export struct LolPlayerRatingPage {
               ImageKnifeComponent({ imageKnifeOption: { loadSrc: this.player.champion, objectFit: ImageFit.Cover } })
                 .width(24).height(24).borderRadius(6)
               Text(this.player.label.length > 0 ? this.player.label : '本局选手')
-                .fontSize(11).fontColor($r('app.color.brand_primary'))
+                .fontSize(this.readerSize(14)).fontColor($r('app.color.brand_primary'))
             }.alignItems(VerticalAlign.Center)
           } else if (this.player.label.length > 0) {
-            Text(this.player.label).fontSize(11).fontColor($r('app.color.brand_primary'))
+            Text(this.player.label).fontSize(this.readerSize(14)).fontColor($r('app.color.brand_primary'))
           }
           Text(`${this.player.kills}/${this.player.deaths}/${this.player.assists} K / D / A`)
-            .fontSize(11).fontColor($r('app.color.text_secondary'))
+            .fontSize(this.readerSize(14)).fontColor($r('app.color.text_secondary'))
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         Column({ space: 3 }) {
           Text(this.player.score > 0 ? this.player.score.toFixed(1) : '—')
-            .fontSize(27).fontWeight(FontWeight.Bold).fontColor(this.scoreColor())
+            .fontSize(this.readerSize(30)).fontWeight(this.readerWeight(FontWeight.Bold)).fontColor(this.scoreColor())
           Text(`${this.formatCount(this.player.votes)} 人评分`)
-            .fontSize(9).fontColor($r('app.color.text_tertiary'))
+            .fontSize(this.readerSize(12)).fontColor($r('app.color.text_tertiary'))
         }.alignItems(HorizontalAlign.End)
       }.width('100%').alignItems(VerticalAlign.Center)
       if (this.player.featuredComment.length > 0) {
         Row({ space: 7 }) {
-          Text('亮评').fontSize(10).fontColor($r('app.color.brand_primary'))
-          Text(`“${this.player.featuredComment}”`).fontSize(11).fontColor($r('app.color.text_secondary'))
+          Text('亮评').fontSize(this.readerSize(13)).fontColor($r('app.color.brand_primary'))
+          Text(`“${this.player.featuredComment}”`).fontSize(this.readerSize(14)).fontColor($r('app.color.text_secondary'))
             .layoutWeight(1).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
           if (this.player.featuredCommentLights > 0) {
-            Text(`${this.formatCount(this.player.featuredCommentLights)} 亮`).fontSize(9)
+            Text(`${this.formatCount(this.player.featuredCommentLights)} 亮`).fontSize(this.readerSize(12))
               .fontColor($r('app.color.text_tertiary'))
           }
         }.width('100%')
       }
       this.Distribution()
       Row() {
-        Text('立即评分').fontSize(12).fontColor($r('app.color.text_secondary')).layoutWeight(1)
+        Text('立即评分').fontSize(this.readerSize(15)).fontColor($r('app.color.text_secondary')).layoutWeight(1)
         Row({ space: 5 }) {
           ForEach([2, 4, 6, 8, 10], (value: number) => {
-            Text(`${value}`).fontSize(10).fontColor($r('app.color.brand_primary'))
+            Text(`${value}`).fontSize(this.readerSize(13)).fontColor($r('app.color.brand_primary'))
               .padding({ left: 8, right: 8, top: 6, bottom: 6 })
               .backgroundColor($r('app.color.bg_page')).borderRadius(7)
               .onClick(() => this.saveScore(value))
@@ -275,7 +286,7 @@ export struct LolPlayerRatingPage {
 
   @Builder
   SortChip(label: string, value: string) {
-    Text(label).fontSize(11)
+    Text(label).fontSize(this.readerSize(14))
       .fontColor(this.order === value ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
       .padding({ left: 10, right: 10, top: 6, bottom: 6 })
       .backgroundColor(this.order === value ? $r('app.color.bg_card') : $r('app.color.bg_page'))
@@ -291,35 +302,37 @@ export struct LolPlayerRatingPage {
             .width(isReply ? 30 : 38).height(isReply ? 30 : 38).borderRadius(19)
         } else {
           Text(item.userName.substring(0, 1)).width(isReply ? 30 : 38).height(isReply ? 30 : 38)
-            .borderRadius(19).textAlign(TextAlign.Center).fontSize(12)
+            .borderRadius(19).textAlign(TextAlign.Center).fontSize(this.readerSize(15))
             .fontColor($r('app.color.text_secondary')).backgroundColor($r('app.color.bg_page'))
         }
         Column({ space: 3 }) {
           Row({ space: 7 }) {
-            Text(item.userName).fontSize(12).fontWeight(FontWeight.Medium)
+            Text(item.userName).fontSize(this.readerSize(15)).fontWeight(this.readerWeight(FontWeight.Medium))
               .fontColor($r('app.color.text_primary')).maxLines(1)
             if (item.score > 0) {
-              Text(`${item.score} 分`).fontSize(10).fontColor($r('app.color.brand_primary'))
+              Text(`${item.score} 分`).fontSize(this.readerSize(13)).fontColor($r('app.color.brand_primary'))
                 .padding({ left: 5, right: 5, top: 2, bottom: 2 })
                 .backgroundColor($r('app.color.bg_page')).borderRadius(5)
             }
           }.width('100%')
           Text(item.date.length > 0 ? item.date : '虎扑评分评论')
-            .fontSize(9).fontColor($r('app.color.text_tertiary'))
+            .fontSize(this.readerSize(12)).fontColor($r('app.color.text_tertiary'))
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         if (item.lightCount > 0) {
-          Text(`✦ ${this.formatCount(item.lightCount)}`).fontSize(10)
+          Text(`✦ ${this.formatCount(item.lightCount)}`).fontSize(this.readerSize(13))
             .fontColor($r('app.color.text_tertiary'))
         }
       }.width('100%').alignItems(VerticalAlign.Center)
       Text(item.content.length > 0 ? item.content : '（图片或表情内容）')
-        .fontSize(isReply ? 13 : 14).fontColor($r('app.color.text_primary'))
-        .width('100%').lineHeight(isReply ? 20 : 22)
+        .fontSize(this.readerSize(isReply ? 15 : 16))
+        .fontWeight(this.readerWeight(FontWeight.Normal))
+        .fontColor($r('app.color.text_primary'))
+        .width('100%').lineHeight(isReply ? 22 : 24)
       if (!isReply && (item.subCommentCount > 0 || item.descendantCount > 0)) {
         Row({ space: 5 }) {
           Text(`${this.formatCount(item.descendantCount > 0 ? item.descendantCount : item.subCommentCount)} 条回复`)
-            .fontSize(11).fontColor($r('app.color.brand_primary'))
-          Text('›').fontSize(13).fontColor($r('app.color.brand_primary'))
+            .fontSize(this.readerSize(14)).fontColor($r('app.color.brand_primary'))
+          Text('›').fontSize(this.readerSize(16)).fontColor($r('app.color.brand_primary'))
         }.width('100%').onClick(() => this.openReplies(item))
       }
     }
@@ -332,9 +345,9 @@ export struct LolPlayerRatingPage {
   ReplySheetBuilder() {
     Column({ space: 0 }) {
       Row() {
-        Text('×').fontSize(26).fontColor($r('app.color.text_secondary')).width(36)
+        Text('×').fontSize(this.readerSize(28)).fontColor($r('app.color.text_secondary')).width(36)
           .onClick(() => this.showReplySheet = false)
-        Text('查看回复').fontSize(17).fontWeight(FontWeight.Bold)
+        Text('查看回复').fontSize(this.readerSize(19)).fontWeight(this.readerWeight(FontWeight.Bold))
           .fontColor($r('app.color.text_primary')).layoutWeight(1).textAlign(TextAlign.Center)
         Text(' ').width(36)
       }.width('100%').height(46).alignItems(VerticalAlign.Center)
@@ -344,13 +357,13 @@ export struct LolPlayerRatingPage {
           Divider().color($r('app.color.divider'))
           Row() {
             Text(`全部回复${this.selectedComment.descendantCount > 0 ? ` / ${this.selectedComment.descendantCount}` : ''}`)
-              .fontSize(15).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary')).layoutWeight(1)
+              .fontSize(this.readerSize(17)).fontWeight(this.readerWeight(FontWeight.Bold)).fontColor($r('app.color.text_primary')).layoutWeight(1)
             Row({ space: 4 }) {
-              Text('最亮').fontSize(10).fontColor(this.replyOrder === 'hot' ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+              Text('最亮').fontSize(this.readerSize(13)).fontColor(this.replyOrder === 'hot' ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
                 .padding({ left: 9, right: 9, top: 6, bottom: 6 })
                 .backgroundColor(this.replyOrder === 'hot' ? $r('app.color.bg_card') : $r('app.color.bg_page'))
                 .onClick(() => this.setReplyOrder('hot'))
-              Text('最早').fontSize(10).fontColor(this.replyOrder === 'old' ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+              Text('最早').fontSize(this.readerSize(13)).fontColor(this.replyOrder === 'old' ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
                 .padding({ left: 9, right: 9, top: 6, bottom: 6 })
                 .backgroundColor(this.replyOrder === 'old' ? $r('app.color.bg_card') : $r('app.color.bg_page'))
                 .onClick(() => this.setReplyOrder('old'))
@@ -362,9 +375,9 @@ export struct LolPlayerRatingPage {
           } else if (this.replies.length === 0) {
             Column({ space: 7 }) {
               Text(this.repliesError.length > 0 ? this.repliesError : '暂时没有更多回复')
-                .fontSize(12).fontColor($r('app.color.text_secondary'))
+                .fontSize(this.readerSize(15)).fontColor($r('app.color.text_secondary'))
               if (this.repliesError.length > 0) {
-                Text('点击重试').fontSize(11).fontColor($r('app.color.brand_primary'))
+                Text('点击重试').fontSize(this.readerSize(14)).fontColor($r('app.color.brand_primary'))
                   .onClick(() => this.loadReplies(true))
               }
             }.width('100%').padding(Spacing.lg).alignItems(HorizontalAlign.Center)
@@ -376,7 +389,7 @@ export struct LolPlayerRatingPage {
               LoadingProgress().width(16).height(16).color($r('app.color.brand_primary'))
                 .width('100%').margin({ top: 8, bottom: 8 })
             } else if (this.repliesHasMore) {
-              Text('加载更多回复').fontSize(11).fontColor($r('app.color.brand_primary'))
+              Text('加载更多回复').fontSize(this.readerSize(14)).fontColor($r('app.color.brand_primary'))
                 .width('100%').textAlign(TextAlign.Center).padding(Spacing.md)
                 .onClick(() => this.loadReplies(false))
             }
@@ -401,13 +414,13 @@ export struct LolPlayerRatingPage {
           Scroll() {
             Column({ space: 12 }) {
               if (this.errorMessage.length > 0) {
-                Text(this.errorMessage).fontSize(11).fontColor($r('app.color.text_tertiary'))
+                Text(this.errorMessage).fontSize(this.readerSize(14)).fontColor($r('app.color.text_tertiary'))
                   .width('100%').textAlign(TextAlign.Center)
               }
               this.PlayerHeader()
               Row() {
                 Text(`亮回复 / ${this.formatCount(this.commentTotal > 0 ? this.commentTotal : this.player.commentCount)}`)
-                  .fontSize(15).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary')).layoutWeight(1)
+                  .fontSize(this.readerSize(17)).fontWeight(this.readerWeight(FontWeight.Bold)).fontColor($r('app.color.text_primary')).layoutWeight(1)
                 Row({ space: 4 }) {
                   this.SortChip('最亮', 'hot')
                   this.SortChip('最新', 'new')
@@ -420,9 +433,9 @@ export struct LolPlayerRatingPage {
               } else if (this.comments.length === 0) {
                 Column({ space: 8 }) {
                   Text(this.errorMessage.length > 0 ? this.errorMessage : '还没有评分评论')
-                    .fontSize(12).fontColor($r('app.color.text_secondary'))
+                    .fontSize(this.readerSize(15)).fontColor($r('app.color.text_secondary'))
                   if (this.errorMessage.length > 0) {
-                    Text('重新加载').fontSize(11).fontColor($r('app.color.brand_primary'))
+                    Text('重新加载').fontSize(this.readerSize(14)).fontColor($r('app.color.brand_primary'))
                       .onClick(() => this.loadComments(true))
                   }
                 }.width('100%').padding(Spacing.lg).alignItems(HorizontalAlign.Center)
@@ -434,7 +447,7 @@ export struct LolPlayerRatingPage {
                   LoadingProgress().width(17).height(17).color($r('app.color.brand_primary'))
                     .width('100%').margin({ top: 8, bottom: 8 })
                 } else if (this.commentsHasMore) {
-                  Text('加载更多评论').fontSize(11).fontColor($r('app.color.brand_primary'))
+                  Text('加载更多评论').fontSize(this.readerSize(14)).fontColor($r('app.color.brand_primary'))
                     .width('100%').textAlign(TextAlign.Center).padding(Spacing.md)
                     .onClick(() => this.loadComments(false))
                 }

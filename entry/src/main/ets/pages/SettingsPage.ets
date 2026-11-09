@@ -492,13 +492,13 @@ export struct SettingsPage {
     .borderRadius(Radius.md)
   }
 
-  /** 阅读设置只作用于帖子正文和回复，不改变首页信息流字号。 */
+  /** Reader typography also covers LoL match ratings and their comment sheets. */
   @Builder
   ReaderSection() {
     this.SectionTitle('阅读设置')
     Column({ space: 12 }) {
       Column({ space: 8 }) {
-        Text('正文与回复字号')
+        Text('正文、回复与赛事评分字号')
           .fontSize(14)
           .fontColor($r('app.color.text_primary'))
         Row({ space: 5 }) {
@@ -517,7 +517,7 @@ export struct SettingsPage {
         .width('100%')
       }
       Column({ space: 8 }) {
-        Text('正文与回复字重')
+        Text('正文、回复与赛事评分字重')
           .fontSize(14)
           .fontColor($r('app.color.text_primary'))
         Row({ space: 6 }) {
@@ -535,7 +535,7 @@ export struct SettingsPage {
         }
         .width('100%')
       }
-      Text('“系统”使用设备当前字号和字重；自定义选项只影响帖子详情，不影响信息流。')
+      Text('“系统”跟随设备的字号与字重设置；自定义选项也应用于英雄联盟赛事评分、评论和回复，信息流字号保持不变。')
         .fontSize(11)
         .lineHeight(16)
         .fontColor($r('app.color.text_tertiary'))

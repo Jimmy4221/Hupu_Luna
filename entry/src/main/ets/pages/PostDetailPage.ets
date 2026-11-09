@@ -34,8 +34,12 @@ export struct PostDetailPage {
   @State hasMoreReplies: boolean = false;
   @State isFav: boolean = false;
   @State subReplies: SubReplyItem[] = [];
-  @State expandedPids: string[] = [];
+  @State loadedSubPids: string[] = [];
   @State loadingSubPid: string = '';
+  @State showPostReplySheet: boolean = false;
+  @State selectedReply: ReplyItem = new ReplyItem();
+  @State subReplyLoadError: boolean = false;
+  @State postReplySortMode: number = 0;
   private replyPage: number = 0;
   private loadingMore: boolean = false;
   @State inputText: string = '';
@@ -481,22 +485,8 @@ export struct PostDetailPage {
     return thumbUrl(url, 120);
   }
 
-  private isExpanded(pid: string): boolean {
-    for (const p of this.expandedPids) {
-      if (p === pid) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   private hasLoadedSub(pid: string): boolean {
-    for (const s of this.subReplies) {
-      if (s.parentPid === pid) {
-        return true;
-      }
-    }
-    return false;
+    return this.loadedSubPids.includes(pid);
   }
 
   private subsOf(pid: string): SubReplyItem[] {
@@ -509,34 +499,28 @@ export struct PostDetailPage {
     return result;
   }
 
-  /** 展开/收起楼中楼 */
+  /** Load nested replies and present them in the reusable bottom sheet. */
   private async toggleSub(item: ReplyItem): Promise<void> {
     const pid: string = item.pid;
-    if (this.isExpanded(pid)) {
-      const arr: string[] = [];
-      for (const p of this.expandedPids) {
-        if (p !== pid) {
-          arr.push(p);
-        }
-      }
-      this.expandedPids = arr;
-      return;
-    }
+    if (this.loadingSubPid.length > 0) return;
+    this.selectedReply = item;
+    this.postReplySortMode = 0;
+    this.subReplyLoadError = false;
+    this.showPostReplySheet = true;
     if (this.hasLoadedSub(pid)) {
-      this.expandedPids = this.expandedPids.concat([pid]);
-      return;
-    }
-    if (this.loadingSubPid.length > 0) {
       return;
     }
     this.loadingSubPid = pid;
     try {
       const list: SubReplyItem[] = await HupuApi.getSubReplies(this.tid, pid);
-      this.subReplies = this.subReplies.concat(list);
-      this.expandedPids = this.expandedPids.concat([pid]);
+      this.subReplies = this.subReplies.concat(list.filter((item: SubReplyItem) =>
+        !this.subReplies.some((existing: SubReplyItem) => existing.pid === item.pid)));
+      this.loadedSubPids = this.loadedSubPids.concat([pid]);
     } catch (e) {
+      this.subReplyLoadError = true;
+    } finally {
+      this.loadingSubPid = '';
     }
-    this.loadingSubPid = '';
   }
 
   /**
@@ -656,6 +640,17 @@ export struct PostDetailPage {
             Text(this.formatSec(this.videoDurSec))
               .fontSize(11)
               .fontColor(Color.White)
+
+            Text('⛶')
+              .fontSize(20)
+              .fontColor(Color.White)
+              .width(30)
+              .height(30)
+              .textAlign(TextAlign.Center)
+              .backgroundColor('#59000000')
+              .borderRadius(15)
+              .onTouch((e: TouchEvent) => this.onMuteTouch(e))
+              .onClick(() => this.videoController.requestFullscreen(true))
           }
           .width('100%')
           .padding({ left: 10, right: 14, top: 8, bottom: 8 })
@@ -770,9 +765,23 @@ export struct PostDetailPage {
   }
 
   @Builder
-  SubReplyRow(sub: SubReplyItem) {
+  PostSubReplyRow(sub: SubReplyItem) {
     Column({ space: 4 }) {
-      this.ReplyAuthorRow(sub.puid, sub.userHeader, sub.userName, sub.isLz, sub.createDt)
+      Row({ space: 8 }) {
+        if (sub.userHeader.length > 0) {
+          ImageKnifeComponent({ imageKnifeOption: {
+            loadSrc: this.avatarUrl(sub.userHeader), objectFit: ImageFit.Cover, border: { radius: 14 }
+          } }).width(28).height(28)
+        }
+        Column({ space: 2 }) {
+          Text(sub.userName).fontSize(this.contentFontSize(14)).fontWeight(this.contentFontWeight(500))
+            .fontColor($r('app.color.text_secondary')).maxLines(1)
+          Text(sub.createDt).fontSize(this.contentFontSize(12)).fontColor($r('app.color.text_tertiary'))
+        }.alignItems(HorizontalAlign.Start)
+        Blank()
+        Text(`${compactCount(sub.light)} 亮`).fontSize(this.contentFontSize(12))
+          .fontColor($r('app.color.text_tertiary'))
+      }.width('100%').alignItems(VerticalAlign.Center)
 
       Text(sub.content)
         .fontSize(this.contentFontSize(14))
@@ -787,16 +796,17 @@ export struct PostDetailPage {
           .objectFit(ImageFit.Contain)
           .borderRadius(Radius.sm)
           .backgroundColor($r('app.color.tag_bg'))
-          .onClick(() => {
-            this.openViewer(sub.contentImages, idx);
-          })
       }, (img: string, idx: number) => `simg_${sub.pid}_${idx}`)
-
-      Text(`${compactCount(sub.light)} 亮`)
-        .fontSize(10)
-        .fontColor($r('app.color.text_tertiary'))
-        .width('100%')
-        .textAlign(TextAlign.End)
+      Row() {
+        Blank()
+        Text('回复').fontSize(this.contentFontSize(13)).fontColor($r('app.color.brand_primary'))
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .onClick(() => {
+            this.replyTargetPid = sub.pid;
+            this.replyTargetUser = sub.userName;
+            this.showPostReplySheet = false;
+          })
+      }.width('100%')
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -835,14 +845,14 @@ export struct PostDetailPage {
       }
       Row({ space: 6 }) {
         Text(userName)
-          .fontSize(12)
-          .fontWeight(FontWeight.Medium)
+          .fontSize(this.contentFontSize(14))
+          .fontWeight(this.contentFontWeight(FontWeight.Medium))
           .fontColor($r('app.color.text_secondary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         if (isLz) {
           Text('楼主')
-            .fontSize(10)
+            .fontSize(this.contentFontSize(12))
             .fontColor($r('app.color.brand_primary'))
             .padding({ left: 4, right: 4 })
             .border({ width: 1, color: $r('app.color.brand_primary') })
@@ -855,7 +865,7 @@ export struct PostDetailPage {
       })
       if (meta.length > 0) {
         Text(meta)
-          .fontSize(11)
+          .fontSize(this.contentFontSize(12))
           .fontColor($r('app.color.text_tertiary'))
           .maxLines(1)
       }
@@ -896,9 +906,8 @@ export struct PostDetailPage {
       Row({ space: 12 }) {
         Blank()
         if (item.replyCount > 0) {
-          Text(this.isExpanded(item.pid) ? '收起回复' :
-            (this.loadingSubPid === item.pid ? '加载中…' : `${compactCount(item.replyCount)} 条回复 ▾`))
-            .fontSize(11)
+          Text(this.loadingSubPid === item.pid ? '加载中…' : `查看 ${compactCount(item.replyCount)} 条回复 ›`)
+            .fontSize(this.contentFontSize(13))
             .fontColor($r('app.color.text_secondary'))
             .padding({ left: 8, right: 8, top: 3, bottom: 3 })
             .backgroundColor($r('app.color.tag_bg'))
@@ -934,28 +943,98 @@ export struct PostDetailPage {
       }
       .width('100%')
 
-      if (this.isExpanded(item.pid)) {
-        Column({ space: 6 }) {
-          ForEach(this.subsOf(item.pid), (sub: SubReplyItem) => {
-            this.SubReplyRow(sub)
-          }, (sub: SubReplyItem) => `sub_${sub.pid}`)
-          if (this.subsOf(item.pid).length === 0) {
-            Text('暂无可见回复')
-              .fontSize(11)
-              .fontColor($r('app.color.text_tertiary'))
-              .width('100%')
-              .textAlign(TextAlign.Center)
-              .padding(8)
-          }
-        }
-        .width('100%')
-        .padding({ top: 4 })
-      }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
     .padding({ left: Spacing.lg, right: Spacing.lg, top: 12, bottom: 12 })
     .backgroundColor($r('app.color.bg_card'))
+  }
+
+  private orderedPostSubReplies(): SubReplyItem[] {
+    const rows: SubReplyItem[] = this.subsOf(this.selectedReply.pid).slice();
+    return rows.sort((a: SubReplyItem, b: SubReplyItem): number => this.postReplySortMode === 0
+      ? b.light - a.light : Number(b.pid) - Number(a.pid));
+  }
+
+  @Builder
+  PostReplySheet() {
+    Column({ space: 0 }) {
+      Row() {
+        Text('×').fontSize(this.contentFontSize(26)).fontColor($r('app.color.text_secondary')).width(36)
+          .onClick(() => this.showPostReplySheet = false)
+        Text('查看回复').fontSize(this.contentFontSize(18)).fontWeight(this.contentFontWeight(FontWeight.Bold))
+          .fontColor($r('app.color.text_primary')).layoutWeight(1).textAlign(TextAlign.Center)
+        Text(' ').width(36)
+      }.width('100%').height(48).alignItems(VerticalAlign.Center)
+      Scroll() {
+        Column({ space: 12 }) {
+          Column({ space: 8 }) {
+            Row({ space: 8 }) {
+              if (this.selectedReply.userHeader.length > 0) {
+                ImageKnifeComponent({ imageKnifeOption: {
+                  loadSrc: this.avatarUrl(this.selectedReply.userHeader),
+                  objectFit: ImageFit.Cover, border: { radius: 18 }
+                } }).width(36).height(36)
+              }
+              Column({ space: 3 }) {
+                Text(this.selectedReply.userName).fontSize(this.contentFontSize(15))
+                  .fontWeight(this.contentFontWeight(FontWeight.Medium)).fontColor($r('app.color.text_primary'))
+                Text(this.selectedReply.createDt).fontSize(this.contentFontSize(12))
+                  .fontColor($r('app.color.text_tertiary'))
+              }.alignItems(HorizontalAlign.Start)
+            }.width('100%').alignItems(VerticalAlign.Center)
+            Text(this.selectedReply.content).fontSize(this.contentFontSize(16))
+              .fontWeight(this.contentFontWeight(400)).lineHeight(24).fontColor($r('app.color.text_primary'))
+              .width('100%')
+            ForEach(this.selectedReply.contentImages, (img: string, idx: number) => {
+              Image(thumbUrl(img, 480)).width(160).objectFit(ImageFit.Contain)
+                .borderRadius(Radius.sm).backgroundColor($r('app.color.tag_bg'))
+            }, (img: string, idx: number) => `sheet_parent_img_${idx}`)
+          }.width('100%').padding(Spacing.md).backgroundColor($r('app.color.bg_card')).borderRadius(Radius.md)
+          Divider().color($r('app.color.divider'))
+          Row() {
+            Text(`全部回复 / ${compactCount(this.selectedReply.replyCount)}`)
+              .fontSize(this.contentFontSize(16)).fontWeight(this.contentFontWeight(FontWeight.Bold))
+              .fontColor($r('app.color.text_primary')).layoutWeight(1)
+            Text('最亮').fontSize(this.contentFontSize(13))
+              .fontColor(this.postReplySortMode === 0 ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+              .backgroundColor(this.postReplySortMode === 0 ? $r('app.color.bg_card') : $r('app.color.bg_page'))
+              .onClick(() => this.postReplySortMode = 0)
+            Text('最新').fontSize(this.contentFontSize(13))
+              .fontColor(this.postReplySortMode === 1 ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+              .backgroundColor(this.postReplySortMode === 1 ? $r('app.color.bg_card') : $r('app.color.bg_page'))
+              .onClick(() => this.postReplySortMode = 1)
+          }.width('100%').alignItems(VerticalAlign.Center)
+          if (this.loadingSubPid === this.selectedReply.pid) {
+            Row() { LoadingProgress().width(20).height(20).color($r('app.color.brand_primary')) }
+              .width('100%').justifyContent(FlexAlign.Center).padding(Spacing.xl)
+          } else if (this.subReplyLoadError) {
+            Text('回复暂时加载失败，点击重试').fontSize(this.contentFontSize(14))
+              .fontColor($r('app.color.brand_primary')).width('100%').textAlign(TextAlign.Center)
+              .padding(Spacing.lg).onClick(() => this.toggleSub(this.selectedReply))
+          } else if (this.orderedPostSubReplies().length === 0) {
+            Text('暂无可见回复').fontSize(this.contentFontSize(14)).fontColor($r('app.color.text_tertiary'))
+              .width('100%').textAlign(TextAlign.Center).padding(Spacing.lg)
+          } else {
+            ForEach(this.orderedPostSubReplies(), (sub: SubReplyItem) => {
+              this.PostSubReplyRow(sub)
+            }, (sub: SubReplyItem) => `sheet_sub_${sub.pid}`)
+          }
+        }.width('100%').padding({ left: Spacing.md, right: Spacing.md, bottom: Spacing.lg })
+      }.layoutWeight(1).scrollBar(BarState.Off)
+      Row() {
+        Text('回复此楼').fontSize(this.contentFontSize(15)).fontColor(Color.White)
+          .width('100%').textAlign(TextAlign.Center).padding({ top: 12, bottom: 12 })
+          .backgroundColor($r('app.color.brand_primary')).borderRadius(10)
+          .onClick(() => {
+            this.replyTargetPid = this.selectedReply.pid;
+            this.replyTargetUser = this.selectedReply.userName;
+            this.showPostReplySheet = false;
+          })
+      }.width('100%').padding({ left: Spacing.md, right: Spacing.md, top: 8, bottom: 8 })
+    }.width('100%').height('100%').backgroundColor($r('app.color.bg_page'))
   }
 
   @Builder
@@ -1106,6 +1185,12 @@ export struct PostDetailPage {
           .backgroundColor($r('app.color.bg_page'))
       }
       }
+      .bindSheet($$this.showPostReplySheet, this.PostReplySheet(), {
+        detents: [SheetSize.MEDIUM, SheetSize.LARGE],
+        preferType: SheetType.BOTTOM,
+        title: { title: '查看回复' },
+        backgroundColor: $r('app.color.bg_page')
+      })
     }
     .hideTitleBar(true)
     .onHidden(() => {
