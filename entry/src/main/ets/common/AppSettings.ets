@@ -15,12 +15,16 @@ const STORE_NAME: string = 'hupluna_settings';
 const KEY_IMAGE_CACHE_MB: string = 'image_cache_mb';
 const KEY_AUTOPLAY_FEED: string = 'autoplay_feed';
 const KEY_AUTOPLAY_POST: string = 'autoplay_post';
+const KEY_READER_FONT_SCALE: string = 'reader_font_scale';
+const KEY_READER_FONT_WEIGHT: string = 'reader_font_weight';
 
 /** AppStorage 键（页面 @StorageLink 同名读取） */
 export class SettingsKey {
   static readonly IMAGE_CACHE_MB: string = 'imageCacheMb';
   static readonly AUTOPLAY_FEED: string = 'autoplayFeed';
   static readonly AUTOPLAY_POST: string = 'autoplayPost';
+  static readonly READER_FONT_SCALE: string = 'readerFontScale';
+  static readonly READER_FONT_WEIGHT: string = 'readerFontWeight';
 }
 
 /** 缓存上限默认/边界（MB） */
@@ -40,16 +44,22 @@ export class AppSettings {
     let cacheMb: number = DEFAULT_CACHE_MB;
     let feed: boolean = true;
     let post: boolean = true;
+    let readerFontScale: number = 0;
+    let readerFontWeight: number = 0;
     try {
       const pref: preferences.Preferences = AppSettings.pref(context);
       cacheMb = AppSettings.clampMb(Number(pref.getSync(KEY_IMAGE_CACHE_MB, DEFAULT_CACHE_MB) as number));
       feed = pref.getSync(KEY_AUTOPLAY_FEED, true) as boolean;
       post = pref.getSync(KEY_AUTOPLAY_POST, true) as boolean;
+      readerFontScale = AppSettings.clampChoice(Number(pref.getSync(KEY_READER_FONT_SCALE, 0) as number), 4);
+      readerFontWeight = AppSettings.clampChoice(Number(pref.getSync(KEY_READER_FONT_WEIGHT, 0) as number), 3);
     } catch (e) {
     }
     AppStorage.setOrCreate<number>(SettingsKey.IMAGE_CACHE_MB, cacheMb);
     AppStorage.setOrCreate<boolean>(SettingsKey.AUTOPLAY_FEED, feed);
     AppStorage.setOrCreate<boolean>(SettingsKey.AUTOPLAY_POST, post);
+    AppStorage.setOrCreate<number>(SettingsKey.READER_FONT_SCALE, readerFontScale);
+    AppStorage.setOrCreate<number>(SettingsKey.READER_FONT_WEIGHT, readerFontWeight);
   }
 
   /** 读取当前缓存上限（MB） */
@@ -119,5 +129,34 @@ export class AppSettings {
       await pref.flush();
     } catch (e) {
     }
+  }
+
+  /** Post-detail reading size: 0 follows current system setting; 1–4 are custom sizes. */
+  static async setReaderFontScale(context: common.Context, choice: number): Promise<void> {
+    const value: number = AppSettings.clampChoice(choice, 4);
+    AppStorage.setOrCreate<number>(SettingsKey.READER_FONT_SCALE, value);
+    try {
+      const pref: preferences.Preferences = AppSettings.pref(context);
+      await pref.put(KEY_READER_FONT_SCALE, value);
+      await pref.flush();
+    } catch (e) {
+    }
+  }
+
+  /** Post-detail reading weight: 0 follows current system setting; 1–3 are custom weights. */
+  static async setReaderFontWeight(context: common.Context, choice: number): Promise<void> {
+    const value: number = AppSettings.clampChoice(choice, 3);
+    AppStorage.setOrCreate<number>(SettingsKey.READER_FONT_WEIGHT, value);
+    try {
+      const pref: preferences.Preferences = AppSettings.pref(context);
+      await pref.put(KEY_READER_FONT_WEIGHT, value);
+      await pref.flush();
+    } catch (e) {
+    }
+  }
+
+  private static clampChoice(value: number, max: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(max, Math.floor(value)));
   }
 }

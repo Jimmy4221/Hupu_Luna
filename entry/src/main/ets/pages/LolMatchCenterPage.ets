@@ -387,60 +387,64 @@ export struct LolMatchCenterPage {
   }
 
   build() {
-    Column() {
-      AppNavBar({ title: '英雄联盟赛事' })
-      Row() {
-        this.TabLabel('赛程', 0)
-        this.TabLabel('选手榜', 1)
-        this.TabLabel('评分对位', 2)
-      }.width('100%').backgroundColor($r('app.color.bg_card'))
-      if (this.tab === 0) {
-        if (this.state === LoadState.Loading) {
-          Column() { LoadingProgress() }.width('100%').height('100%').justifyContent(FlexAlign.Center)
-        } else if (this.state === LoadState.Error || this.state === LoadState.Empty) {
-          Column({ space: 12 }) {
-            Text(this.state === LoadState.Error ? '赛程加载失败' : '暂无赛程').fontSize(14).fontColor($r('app.color.text_secondary'))
-            Button('重试').onClick(() => this.loadFixtures())
-          }.width('100%').height('100%').justifyContent(FlexAlign.Center)
+    NavDestination() {
+      Column() {
+        AppNavBar({ title: '英雄联盟赛事' })
+        Row() {
+          this.TabLabel('赛程', 0)
+          this.TabLabel('选手榜', 1)
+          this.TabLabel('评分对位', 2)
+        }.width('100%').backgroundColor($r('app.color.bg_card'))
+        if (this.tab === 0) {
+          if (this.state === LoadState.Loading) {
+            Column() { LoadingProgress() }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+          } else if (this.state === LoadState.Error || this.state === LoadState.Empty) {
+            Column({ space: 12 }) {
+              Text(this.state === LoadState.Error ? '赛程加载失败' : '暂无赛程').fontSize(14).fontColor($r('app.color.text_secondary'))
+              Button('重试').onClick(() => this.loadFixtures())
+            }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+          } else {
+            List({ space: 10 }) {
+              ForEach(this.fixtures, (item: LolFixture) => {
+                ListItem() { this.FixtureCard(item) }
+              }, (item: LolFixture) => `fixture_${item.eventId}_${item.matchId}`)
+            }.width('100%').layoutWeight(1).padding(Spacing.md).scrollBar(BarState.Off)
+          }
+        } else if (this.tab === 1) {
+          if (this.boardLoading) {
+            Column() { LoadingProgress() }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+          } else if (this.leaderboard.length === 0) {
+            Column({ space: 8 }) {
+              Text('需要读取近期 Hupu 选手评分数据').fontSize(13).fontColor($r('app.color.text_secondary'))
+              Text('加载选手榜').fontSize(14).fontColor($r('app.color.brand_primary')).onClick(() => this.loadLeaderboard())
+            }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+          } else {
+            List({ space: 1 }) {
+              ForEach(this.leaderboard, (p: LolLeaderboardRow, index: number) => {
+                ListItem() {
+                  Row({ space: 10 }) {
+                    Text(`${index + 1}`).fontSize(13).fontColor($r('app.color.text_tertiary')).width(24)
+                    Column({ space: 4 }) {
+                      Text(p.name).fontSize(14).fontColor($r('app.color.text_primary'))
+                      Text(`${p.games} 局 · KDA ${p.kda}`).fontSize(11).fontColor($r('app.color.text_secondary'))
+                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                    Text(p.average).fontSize(17).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_primary'))
+                  }.padding(Spacing.md).width('100%').backgroundColor($r('app.color.bg_card'))
+                }
+              }, (p: LolLeaderboardRow) => `leader_${p.name}`)
+            }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
+          }
         } else {
-          List({ space: 10 }) {
-            ForEach(this.fixtures, (item: LolFixture) => {
-              ListItem() { this.FixtureCard(item) }
-            }, (item: LolFixture) => `fixture_${item.eventId}_${item.matchId}`)
-          }.width('100%').height('100%').padding(Spacing.md).scrollBar(BarState.Off)
+          if (this.detailLoading && this.matches.length === 0 && this.selectedMatch === null) {
+            Column() { LoadingProgress() }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+          } else {
+            Scroll() { this.MatchupDiagram() }
+              .width('100%').layoutWeight(1).padding(Spacing.md).scrollBar(BarState.Off)
+          }
         }
-      } else if (this.tab === 1) {
-        if (this.boardLoading) {
-          Column() { LoadingProgress() }.width('100%').height('100%').justifyContent(FlexAlign.Center)
-        } else if (this.leaderboard.length === 0) {
-          Column({ space: 8 }) {
-            Text('需要读取近期 Hupu 选手评分数据').fontSize(13).fontColor($r('app.color.text_secondary'))
-            Text('加载选手榜').fontSize(14).fontColor($r('app.color.brand_primary')).onClick(() => this.loadLeaderboard())
-          }.width('100%').height('100%').justifyContent(FlexAlign.Center)
-        } else {
-          List({ space: 1 }) {
-            ForEach(this.leaderboard, (p: LolLeaderboardRow, index: number) => {
-              ListItem() {
-                Row({ space: 10 }) {
-                  Text(`${index + 1}`).fontSize(13).fontColor($r('app.color.text_tertiary')).width(24)
-                  Column({ space: 4 }) {
-                    Text(p.name).fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text(`${p.games} 局 · KDA ${p.kda}`).fontSize(11).fontColor($r('app.color.text_secondary'))
-                  }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                  Text(p.average).fontSize(17).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_primary'))
-                }.padding(Spacing.md).width('100%').backgroundColor($r('app.color.bg_card'))
-              }
-            }, (p: LolLeaderboardRow) => `leader_${p.name}`)
-          }.width('100%').height('100%').scrollBar(BarState.Off)
-        }
-      } else {
-        if (this.detailLoading && this.matches.length === 0 && this.selectedMatch === null) {
-          Column() { LoadingProgress() }.width('100%').height('100%').justifyContent(FlexAlign.Center)
-        } else {
-          Scroll() { this.MatchupDiagram() }
-            .width('100%').height('100%').padding(Spacing.md).scrollBar(BarState.Off)
-        }
-      }
-    }.width('100%').height('100%').backgroundColor($r('app.color.bg_page'))
+      }.width('100%').height('100%').backgroundColor($r('app.color.bg_page'))
+    }
+    .hideTitleBar(true)
+    .backgroundColor($r('app.color.bg_page'))
   }
 }

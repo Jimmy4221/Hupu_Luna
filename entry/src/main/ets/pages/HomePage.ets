@@ -1,7 +1,7 @@
 import { HupuApi } from '../network/HupuApi';
 import { NbaApi } from '../network/NbaApi';
 import { SoccerApi } from '../network/SoccerApi';
-import { ThreadListItem, ThreadListPage, NbaNewsItem, MatchItem, MatchDay, HotRankItem, SoccerMatchItem } from '../model/Models';
+import { ThreadListItem, ThreadListPage, ReplyItem, NbaNewsItem, MatchItem, MatchDay, HotRankItem, SoccerMatchItem } from '../model/Models';
 import { LoadState, StateView } from '../views/StateView';
 import { FeedSkeleton } from '../views/Skeleton';
 import { Spacing, FontSize, Radius, RouteName } from '../common/Theme';
@@ -85,6 +85,13 @@ class OfficialFeed {
   rows: FeedRow[] = [];
 }
 
+/** Batched search results for image-backed topic feeds. */
+class TopicSearchBatch {
+  items: ThreadListItem[] = [];
+  page: number = 0;
+  hasMore: boolean = false;
+}
+
 /** 频道缓存快照（缓存优先渲染：先渲缓存再静默刷新） */
 class HomeCacheData {
   rows: FeedRow[] = [];
@@ -127,6 +134,10 @@ export struct HomePage {
   private officialSeen: Set<string> = new Set<string>();
   /** 官方频道是否已回退到普通帖子流（回退后不再按官方过滤） */
   private officialFallback: boolean = false;
+  /** LoL featured-reply requests are queued to avoid parallel large PC-page downloads. */
+  private lightReplyRequests: string[] = [];
+  private lightReplyQueue: string[] = [];
+  private lightReplyWorkerActive: boolean = false;
   /** 官方频道连续无收获页数（用于判定官方内容到底） */
   private officialDryPages: number = 0;
   /** 当前视频是否静音（默认静音，切换视频时复位） */
@@ -272,6 +283,67 @@ export struct HomePage {
       result.push(this.mapOne(t, officialCard));
     }
     return result;
+  }
+
+  /**
+   * Search results are global, then filtered to a channel fid. Walk a few search
+   * pages at a time so the LoL feed gets a full screen of matching posts even
+   * when unrelated search results occupy the first pages.
+   */
+  private async searchTopicBatch(ch: ChannelDef, startPage: number, targetCount: number): Promise<TopicSearchBatch> {
+    const batch: TopicSearchBatch = new TopicSearchBatch();
+    const seen: Set<string> = new Set<string>();
+    let page: number = startPage;
+    for (let attempt: number = 0; attempt < 5 && batch.items.length < targetCount; attempt++) {
+      const found: ThreadListItem[] = await HupuApi.searchThreads(ch.historyKeyword, page);
+      batch.page = page;
+      batch.hasMore = found.length >= 20;
+      for (const item of found) {
+        if (item.fid === ch.topicId && !seen.has(item.tid)) {
+          batch.items.push(item);
+          seen.add(item.tid);
+        }
+      }
+      if (!batch.hasMore) break;
+      page++;
+    }
+    return batch;
+  }
+
+  private requestLightReplyPreview(tid: string): void {
+    if (tid.length === 0 || this.lightReplyRequests.indexOf(tid) >= 0) return;
+    this.lightReplyRequests.push(tid);
+    this.lightReplyQueue.push(tid);
+    this.processLightReplyQueue();
+  }
+
+  /** Fetch the brightest first-page reply lazily for visible LoL feed cards. */
+  private async processLightReplyQueue(): Promise<void> {
+    if (this.lightReplyWorkerActive) return;
+    this.lightReplyWorkerActive = true;
+    while (this.lightReplyQueue.length > 0) {
+      const tid: string = this.lightReplyQueue.shift() ?? '';
+      if (tid.length === 0) continue;
+      try {
+        const result = await HupuApi.getReplies(tid, 1);
+        let best: ReplyItem | null = null;
+        for (const item of result.items) {
+          if (item.content.length > 0 && (best === null || item.light > best.light)) best = item;
+        }
+        if (best !== null && this.activeChannelId === 'lol') {
+          const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
+          if (index >= 0) {
+            const nextRows: FeedRow[] = this.rows.slice();
+            nextRows[index].lightReplyContent = best.content;
+            nextRows[index].lightReplyUser = best.userName;
+            nextRows[index].lightReplyCount = best.light;
+            this.rows = nextRows;
+          }
+        }
+      } catch (e) {
+      }
+    }
+    this.lightReplyWorkerActive = false;
   }
 
   /** 单条映射（loadMore 追加时复用） */
@@ -565,17 +637,17 @@ export struct HomePage {
       } else if (ch.kind === ChannelKind.TOPIC) {
         // 搜索结果带图；配置了历史关键词的频道按 fid 过滤至对应板块。
         if (ch.historyKeyword.length > 0) {
-          const found: ThreadListItem[] = await HupuApi.searchThreads(ch.historyKeyword, 1);
-          const items: ThreadListItem[] = found.filter((item: ThreadListItem) => item.fid === ch.topicId);
-          newRows = this.mapThreads(items, false);
-          newHasMore = found.length > 0;
+          const batch: TopicSearchBatch = await this.searchTopicBatch(ch, 1, 20);
+          newRows = this.mapThreads(batch.items, false);
+          newHasMore = batch.hasMore;
+          newPage = batch.page;
         } else {
           const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, 1);
           newRows = this.mapThreads(res.items, false);
           newHasMore = res.hasMore;
         }
         newCursor = '';
-        newPage = 1;
+        if (ch.historyKeyword.length === 0) newPage = 1;
       } else {
         const res: ThreadListPage = await HupuApi.getWalkingStreet(1, '');
         newRows = this.mapThreads(res.items, true);
@@ -935,27 +1007,30 @@ export struct HomePage {
         // 配置了搜索关键词的频道沿用带图搜索源分页。
         const nextPage: number = this.pageIndex + 1;
         if (ch.historyKeyword.length > 0) {
-          const found: ThreadListItem[] = await HupuApi.searchThreads(ch.historyKeyword, nextPage);
-          const items: ThreadListItem[] = found.filter((item: ThreadListItem) => item.fid === ch.topicId);
+          const batch: TopicSearchBatch = await this.searchTopicBatch(ch, nextPage, 20);
           if (seq !== this.loadSeq) {
             return;
           }
-          this.rows = this.rows.concat(this.mapThreads(items, false));
-          this.pageIndex = nextPage;
-          this.hasMore = found.length > 0;
-          return;
+          const existing: Set<string> = new Set<string>();
+          for (const row of this.rows) existing.add(row.tid);
+          const newItems: ThreadListItem[] = batch.items.filter((item: ThreadListItem) => !existing.has(item.tid));
+          this.rows = this.rows.concat(this.mapThreads(newItems, false));
+          this.pageIndex = batch.page;
+          this.hasMore = batch.hasMore;
+        } else {
+          const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, nextPage);
+          if (seq !== this.loadSeq) {
+            return;
+          }
+          this.rows = this.rows.concat(this.mapThreads(res.items, false));
+          this.pageIndex = this.pageIndex + 1;
+          this.hasMore = res.hasMore;
         }
-        const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, nextPage);
-        if (seq !== this.loadSeq) {
-          return;
-        }
-        this.rows = this.rows.concat(this.mapThreads(res.items, false));
-        this.pageIndex = this.pageIndex + 1;
-        this.hasMore = res.hasMore;
       }
     } catch (e) {
+    } finally {
+      this.loadingMore = false;
     }
-    this.loadingMore = false;
   }
 
   /** 加载频道比赛条：篮球（NBA/CBA）取最相关比赛日；足球取最相关比赛日 */
@@ -1711,6 +1786,9 @@ export struct HomePage {
             .fontColor($r('app.color.text_tertiary'))
         }
         .width('100%')
+        if (row.lightReplyContent.length > 0) {
+          this.LightReplyBlock(row)
+        }
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
@@ -2043,6 +2121,11 @@ export struct HomePage {
                 }
                 .padding({ left: Spacing.lg, right: Spacing.lg })
                 .backgroundColor($r('app.color.bg_card'))
+                .onAppear(() => {
+                  if (this.activeChannelId === 'lol' && row.lightReplyContent.length === 0) {
+                    this.requestLightReplyPreview(row.tid);
+                  }
+                })
                 .onTouch((e: TouchEvent) => {
                   if (e.type === TouchType.Down) {
                     this.itemTouchDown(e);

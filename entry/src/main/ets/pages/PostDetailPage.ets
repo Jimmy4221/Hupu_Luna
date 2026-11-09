@@ -10,7 +10,7 @@ import { CacheStore } from '../database/CacheStore';
 import { CachedPayload } from '../database/CacheStore';
 import { SessionManager } from '../network/SessionManager';
 import { WriteApi } from '../network/WriteApi';
-import { promptAction, display } from '@kit.ArkUI';
+import { promptAction, display, uiAppearance } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { AppNavBar } from '../views/AppNavBar';
 import { ImageKnifeComponent } from '@ohos/imageknife';
@@ -62,6 +62,9 @@ export struct PostDetailPage {
   private mutePressed: boolean = false;
   /** 设置项：打开帖子是否自动播放视频 */
   @StorageLink('autoplayPost') @Watch('onAutoplayChanged') autoplayPost: boolean = true;
+  @StorageLink('readerFontScale') readerFontScale: number = 0;
+  @StorageLink('readerFontWeight') readerFontWeight: number = 0;
+  @State replySortMode: number = 0;
 
   /** 关闭"打开帖子自动播放"时立刻暂停正在播的视频（仅暂停，进度保留） */
   onAutoplayChanged(): void {
@@ -74,6 +77,47 @@ export struct PostDetailPage {
   private resumeOnShow: boolean = false;
   /** 内容区宽度缓存（vp，惰性计算） */
   private cachedContentW: number = 0;
+
+  /** Apply system typography to reader text only; the home feed remains unchanged. */
+  private contentFontSize(base: number): number {
+    if (this.readerFontScale > 0) {
+      const customScales: number[] = [1, 0.9, 1, 1.15, 1.3];
+      return base * (customScales[this.readerFontScale] ?? 1);
+    }
+    try {
+      const scale: number = uiAppearance.getFontScale();
+      return base * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+    } catch (e) {
+      return base;
+    }
+  }
+
+  private contentFontWeight(base: number): number {
+    if (this.readerFontWeight === 1) return 400;
+    if (this.readerFontWeight === 2) return 500;
+    if (this.readerFontWeight === 3) return 700;
+    try {
+      const scale: number = uiAppearance.getFontWeightScale();
+      const adjusted: number = Math.round((base * (Number.isFinite(scale) && scale > 0 ? scale : 1)) / 100) * 100;
+      return Math.max(100, Math.min(900, adjusted));
+    } catch (e) {
+      return base;
+    }
+  }
+
+  private repliesForDisplay(): ReplyItem[] {
+    const result: ReplyItem[] = this.replies.slice();
+    result.sort((a: ReplyItem, b: ReplyItem): number => {
+      if (this.replySortMode === 0) {
+        return b.light - a.light || b.replyCount - a.replyCount;
+      }
+      const timeA: number = Date.parse(a.createDt);
+      const timeB: number = Date.parse(b.createDt);
+      if (Number.isFinite(timeA) && Number.isFinite(timeB) && timeA !== timeB) return timeB - timeA;
+      return Number(b.pid) - Number(a.pid);
+    });
+    return result;
+  }
 
   aboutToAppear(): void {
     this.loadDetail();
@@ -625,8 +669,8 @@ export struct PostDetailPage {
   HeaderCard() {
     Column({ space: 10 }) {
       Text(this.detail.title)
-        .fontSize(FontSize.headline)
-        .fontWeight(FontWeight.Bold)
+        .fontSize(this.contentFontSize(FontSize.headline))
+        .fontWeight(this.contentFontWeight(700))
         .fontColor($r('app.color.text_primary'))
         .width('100%')
       Row({ space: 10 }) {
@@ -674,7 +718,8 @@ export struct PostDetailPage {
       .alignItems(VerticalAlign.Center)
 
       Text(this.contentText)
-        .fontSize(16)
+        .fontSize(this.contentFontSize(16))
+        .fontWeight(this.contentFontWeight(400))
         .lineHeight(26)
         .fontColor($r('app.color.text_primary'))
         .width('100%')
@@ -722,7 +767,8 @@ export struct PostDetailPage {
       this.ReplyAuthorRow(sub.puid, sub.userHeader, sub.userName, sub.isLz, sub.createDt)
 
       Text(sub.content)
-        .fontSize(14)
+        .fontSize(this.contentFontSize(14))
+        .fontWeight(this.contentFontWeight(400))
         .lineHeight(21)
         .fontColor($r('app.color.text_primary'))
         .width('100%')
@@ -822,7 +868,8 @@ export struct PostDetailPage {
 
 
       Text(item.content)
-        .fontSize(15)
+        .fontSize(this.contentFontSize(15))
+        .fontWeight(this.contentFontWeight(400))
         .lineHeight(23)
         .fontColor($r('app.color.text_primary'))
         .width('100%')
@@ -903,6 +950,17 @@ export struct PostDetailPage {
     .backgroundColor($r('app.color.bg_card'))
   }
 
+  @Builder
+  ReplySortChip(label: string, mode: number) {
+    Text(label)
+      .fontSize(11)
+      .fontColor(this.replySortMode === mode ? Color.White : $r('app.color.text_secondary'))
+      .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+      .backgroundColor(this.replySortMode === mode ? $r('app.color.brand_primary') : $r('app.color.tag_bg'))
+      .borderRadius(12)
+      .onClick(() => this.replySortMode = mode)
+  }
+
   build() {
     NavDestination() {
       Column() {
@@ -916,17 +974,20 @@ export struct PostDetailPage {
           .margin({ bottom: Spacing.sm })
 
           ListItem() {
-            Row() {
+            Row({ space: 6 }) {
               Text(`全部回复 ${this.replyTotal > 0 ? this.replyTotal : ''}`)
                 .fontSize(FontSize.title)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1)
+              this.ReplySortChip('最热', 0)
+              this.ReplySortChip('最新', 1)
             }
             .width('100%')
             .padding({ left: Spacing.lg, right: Spacing.lg, top: 8, bottom: 8 })
           }
 
-          ForEach(this.replies, (item: ReplyItem) => {
+          ForEach(this.repliesForDisplay(), (item: ReplyItem) => {
             ListItem() {
               Column() {
                 this.ReplyCard(item)

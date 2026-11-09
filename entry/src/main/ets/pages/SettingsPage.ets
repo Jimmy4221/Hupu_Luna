@@ -5,6 +5,11 @@ import { SessionManager, HupuUserInfo } from '../network/SessionManager';
 import { AppSettings, CACHE_PRESETS, DEFAULT_CACHE_MB, MIN_CACHE_MB, MAX_CACHE_MB } from '../common/AppSettings';
 import { AppNavBar } from '../views/AppNavBar';
 
+const READER_SIZE_CHOICES: number[] = [0, 1, 2, 3, 4];
+const READER_SIZE_LABELS: string[] = ['系统', '小', '标准', '大', '特大'];
+const READER_WEIGHT_CHOICES: number[] = [0, 1, 2, 3];
+const READER_WEIGHT_LABELS: string[] = ['系统', '常规', '中粗', '加粗'];
+
 /** 设置页：关于 / 账号 / 存储设置 / 播放设置 */
 @Component
 export struct SettingsPage {
@@ -13,6 +18,8 @@ export struct SettingsPage {
   @StorageLink('imageCacheMb') imageCacheMb: number = DEFAULT_CACHE_MB;
   @StorageLink('autoplayFeed') autoplayFeed: boolean = true;
   @StorageLink('autoplayPost') autoplayPost: boolean = true;
+  @StorageLink('readerFontScale') readerFontScale: number = 0;
+  @StorageLink('readerFontWeight') readerFontWeight: number = 0;
   @State version: string = '0.5.0';
   @State showCookieEditor: boolean = false;
   @State cookieInput: string = '';
@@ -485,6 +492,61 @@ export struct SettingsPage {
     .borderRadius(Radius.md)
   }
 
+  /** 阅读设置只作用于帖子正文和回复，不改变首页信息流字号。 */
+  @Builder
+  ReaderSection() {
+    this.SectionTitle('阅读设置')
+    Column({ space: 12 }) {
+      Column({ space: 8 }) {
+        Text('正文与回复字号')
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+        Row({ space: 5 }) {
+          ForEach(READER_SIZE_CHOICES, (choice: number) => {
+            Text(READER_SIZE_LABELS[choice])
+              .fontSize(11)
+              .fontColor(this.readerFontScale === choice ? Color.White : $r('app.color.text_secondary'))
+              .layoutWeight(1)
+              .textAlign(TextAlign.Center)
+              .padding({ top: 8, bottom: 8 })
+              .backgroundColor(this.readerFontScale === choice ? $r('app.color.brand_primary') : $r('app.color.tag_bg'))
+              .borderRadius(8)
+              .onClick(() => AppSettings.setReaderFontScale(this.getCtx(), choice))
+          }, (choice: number) => `reader_size_${choice}`)
+        }
+        .width('100%')
+      }
+      Column({ space: 8 }) {
+        Text('正文与回复字重')
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+        Row({ space: 6 }) {
+          ForEach(READER_WEIGHT_CHOICES, (choice: number) => {
+            Text(READER_WEIGHT_LABELS[choice])
+              .fontSize(11)
+              .fontColor(this.readerFontWeight === choice ? Color.White : $r('app.color.text_secondary'))
+              .layoutWeight(1)
+              .textAlign(TextAlign.Center)
+              .padding({ top: 8, bottom: 8 })
+              .backgroundColor(this.readerFontWeight === choice ? $r('app.color.brand_primary') : $r('app.color.tag_bg'))
+              .borderRadius(8)
+              .onClick(() => AppSettings.setReaderFontWeight(this.getCtx(), choice))
+          }, (choice: number) => `reader_weight_${choice}`)
+        }
+        .width('100%')
+      }
+      Text('“系统”使用设备当前字号和字重；自定义选项只影响帖子详情，不影响信息流。')
+        .fontSize(11)
+        .lineHeight(16)
+        .fontColor($r('app.color.text_tertiary'))
+        .width('100%')
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor($r('app.color.bg_card'))
+    .borderRadius(Radius.md)
+  }
+
   @Builder
   SwitchRow(title: string, desc: string, value: boolean, onToggle: (on: boolean) => void) {
     Row({ space: 12 }) {
@@ -519,6 +581,7 @@ export struct SettingsPage {
             this.AboutSection()
             this.AccountSection()
             this.StorageSection()
+            this.ReaderSection()
             this.PlaybackSection()
 
             Text('数据来源：m.hupu.com / bbs.hupu.com 公开页面')

@@ -2,15 +2,15 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#1D1F23"
+      "value": "#000000"
     },
     {
       "name": "bg_page",
-      "value": "#1D1F23"
+      "value": "#000000"
     },
     {
       "name": "bg_card",
-      "value": "#24262B"
+      "value": "#0D0D0F"
     },
     {
       "name": "text_primary",
