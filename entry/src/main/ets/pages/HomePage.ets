@@ -143,6 +143,7 @@ export struct HomePage {
   private lightReplyRequests: string[] = [];
   private lightReplyQueue: string[] = [];
   private lightReplyWorkerActive: boolean = false;
+  private lightReplyCurrentTid: string = '';
   /** Search2 can omit full photo arrays and signed video URLs; enrich visible cards lazily. */
   private threadDetailRequests: string[] = [];
   private threadDetailQueue: string[] = [];
@@ -368,7 +369,7 @@ export struct HomePage {
   }
 
   private requestLightReplyPreview(tid: string): void {
-    if (tid.length === 0 || this.lightReplyRequests.indexOf(tid) >= 0) return;
+    if (tid.length === 0 || tid === this.lightReplyCurrentTid || this.lightReplyRequests.indexOf(tid) >= 0) return;
     this.lightReplyRequests.push(tid);
     this.lightReplyQueue.push(tid);
     this.processLightReplyQueue();
@@ -381,6 +382,7 @@ export struct HomePage {
     while (this.lightReplyQueue.length > 0) {
       const tid: string = this.lightReplyQueue.shift() ?? '';
       if (tid.length === 0) continue;
+      this.lightReplyCurrentTid = tid;
       try {
         let best: ReplyItem | null = null;
         // Search2 does not consistently include reply counts; walk the first
@@ -410,13 +412,14 @@ export struct HomePage {
         const requestedIndex: number = this.lightReplyRequests.indexOf(tid);
         if (requestedIndex >= 0) this.lightReplyRequests.splice(requestedIndex, 1);
       }
+      this.lightReplyCurrentTid = '';
     }
     this.lightReplyWorkerActive = false;
   }
 
   private requestThreadDetail(tid: string, playWhenReady: boolean = false): void {
     if (playWhenReady) this.playAfterVideoLoadTid = tid;
-    if (tid.length === 0) return;
+    if (tid.length === 0 || tid === this.threadDetailCurrentTid) return;
     const requestedIndex: number = this.threadDetailRequests.indexOf(tid);
     if (requestedIndex >= 0) {
       if (playWhenReady) {
@@ -731,6 +734,11 @@ export struct HomePage {
     const ch: ChannelDef = ChannelCatalog.find(this.activeChannelId);
     this.loadSeq = this.loadSeq + 1;
     const seq: number = this.loadSeq;
+    // A reload creates fresh rows, so allow their lazy reply/media backfills to run again.
+    this.lightReplyRequests = [];
+    this.lightReplyQueue = [];
+    this.threadDetailRequests = [];
+    this.threadDetailQueue = [];
     const keepContent: boolean = animate && this.state === LoadState.Ready;
     this.pageIndex = 0;
     this.cursor = '';
