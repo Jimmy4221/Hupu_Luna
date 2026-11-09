@@ -186,6 +186,12 @@ struct Index {
           AppStorage.setOrCreate<number>('profileTick', Date.now());
         }
       })
+      .onTabBarClick((index: number) => {
+        // HdsTabs invokes this even when the currently selected tab is tapped.
+        if (index === 0) {
+          AppStorage.setOrCreate<number>('homeReselectTick', Date.now());
+        }
+      })
     }
     .hideTitleBar(true)
     .mode(NavigationMode.Stack)

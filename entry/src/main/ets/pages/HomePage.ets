@@ -11,6 +11,7 @@ import { ChannelDef, ChannelKind, ChannelCatalog } from '../common/Channels';
 import { OfficialAccounts } from '../common/OfficialAccounts';
 import { ChannelStore } from '../database/ChannelStore';
 import { CacheStore, CachedPayload } from '../database/CacheStore';
+import { VideoOrientation } from '../common/VideoOrientation';
 import { ImageKnifeComponent } from '@ohos/imageknife';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
@@ -108,6 +109,7 @@ export struct HomePage {
   @Consume('pageStack') pageStack: NavPathStack;
   @StorageLink('channelIdsJson') @Watch('onChannelsChanged') channelIdsJson: string = '';
   @StorageLink('activeChannelId') @Watch('onActiveChanged') activeChannelId: string = '';
+  @StorageLink('homeReselectTick') @Watch('onHomeReselected') homeReselectTick: number = 0;
   @State channels: ChannelDef[] = [];
   @State rows: FeedRow[] = [];
   @State ranks: HotRankItem[] = [];
@@ -117,6 +119,7 @@ export struct HomePage {
   @State state: LoadState = LoadState.Loading;
   @State refreshing: boolean = false;
   @State staleTip: boolean = false;
+  @State topBarsVisible: boolean = true;
   @StorageLink('topAvoidPx') topAvoidPx: number = 0;
   @State hasMore: boolean = false;
   @State activeKind: string = '';
@@ -140,11 +143,11 @@ export struct HomePage {
   private lightReplyRequests: string[] = [];
   private lightReplyQueue: string[] = [];
   private lightReplyWorkerActive: boolean = false;
-  /** Search2 marks video posts but omits their signed play URL; enrich visible video cards lazily. */
-  private videoDetailRequests: string[] = [];
-  private videoDetailQueue: string[] = [];
-  private videoDetailWorkerActive: boolean = false;
-  private videoDetailCurrentTid: string = '';
+  /** Search2 can omit full photo arrays and signed video URLs; enrich visible cards lazily. */
+  private threadDetailRequests: string[] = [];
+  private threadDetailQueue: string[] = [];
+  private threadDetailWorkerActive: boolean = false;
+  private threadDetailCurrentTid: string = '';
   private playAfterVideoLoadTid: string = '';
   /** 官方频道连续无收获页数（用于判定官方内容到底） */
   private officialDryPages: number = 0;
@@ -161,6 +164,9 @@ export struct HomePage {
   private loadingMore: boolean = false;
   private loadSeq: number = 0;
   private channelScroller: Scroller = new Scroller();
+  private feedScroller: Scroller = new Scroller();
+  private topBarScrollDelta: number = 0;
+  private lastTopBarScrollDirection: number = 0;
   private lastLoadedChannelId: string = '';
   private lastSwitchDir: number = 1;
   private tapThresholdPx: number = 0;
@@ -253,7 +259,50 @@ export struct HomePage {
     const isSwitch: boolean =
       this.lastLoadedChannelId.length > 0 && this.lastLoadedChannelId !== this.activeChannelId;
     this.saveLastChannel(this.activeChannelId);
+    this.topBarsVisible = true;
+    this.topBarScrollDelta = 0;
+    this.lastTopBarScrollDirection = 0;
     this.loadActive(isSwitch);
+  }
+
+  /** Tapping 首页 again returns the active feed to its top and reloads it. */
+  onHomeReselected(): void {
+    if (this.homeReselectTick <= 0) return;
+    this.topBarsVisible = true;
+    this.topBarScrollDelta = 0;
+    this.lastTopBarScrollDirection = 0;
+    setTimeout(() => {
+      try {
+        this.feedScroller.scrollToIndex(0, false, ScrollAlign.START);
+      } catch (e) {
+      }
+      if (!this.refreshing) {
+        this.refreshing = true;
+        this.loadActive(false);
+      }
+    }, 80);
+  }
+
+  /** Positive List offsets mean the feed is moving up as the user scrolls down. */
+  private onFeedDidScroll(offset: number): void {
+    if (Math.abs(offset) < 1) return;
+    const direction: number = offset > 0 ? 1 : -1;
+    if (direction !== this.lastTopBarScrollDirection) {
+      this.lastTopBarScrollDirection = direction;
+      this.topBarScrollDelta = 0;
+    }
+    this.topBarScrollDelta += offset;
+    if (this.topBarsVisible && this.topBarScrollDelta >= 22) {
+      this.topBarScrollDelta = 0;
+      this.getUIContext().animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
+        this.topBarsVisible = false;
+      });
+    } else if (!this.topBarsVisible && this.topBarScrollDelta <= -12) {
+      this.topBarScrollDelta = 0;
+      this.getUIContext().animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
+        this.topBarsVisible = true;
+      });
+    }
   }
 
   private rebuildChannels(): void {
@@ -333,10 +382,15 @@ export struct HomePage {
       const tid: string = this.lightReplyQueue.shift() ?? '';
       if (tid.length === 0) continue;
       try {
-        const result = await HupuApi.getReplies(tid, 1);
         let best: ReplyItem | null = null;
-        for (const item of result.items) {
-          if (item.content.length > 0 && (best === null || item.light > best.light)) best = item;
+        // Search2 does not consistently include reply counts; walk the first
+        // available reply pages and select the highest-light visible reply.
+        for (let page: number = 1; page <= 3; page++) {
+          const result = await HupuApi.getReplies(tid, page);
+          for (const item of result.items) {
+            if (item.content.length > 0 && (best === null || item.light > best.light)) best = item;
+          }
+          if (!result.hasMore) break;
         }
         if (best !== null) {
           const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
@@ -360,49 +414,66 @@ export struct HomePage {
     this.lightReplyWorkerActive = false;
   }
 
-  private requestVideoDetail(tid: string, playWhenReady: boolean = false): void {
+  private requestThreadDetail(tid: string, playWhenReady: boolean = false): void {
     if (playWhenReady) this.playAfterVideoLoadTid = tid;
     if (tid.length === 0) return;
-    const requestedIndex: number = this.videoDetailRequests.indexOf(tid);
+    const requestedIndex: number = this.threadDetailRequests.indexOf(tid);
     if (requestedIndex >= 0) {
       if (playWhenReady) {
         const row: FeedRow | undefined = this.rows.find((item: FeedRow) => item.tid === tid);
         if (row !== undefined && row.videoUrl.length > 0) {
           this.startPlay(tid);
           this.playAfterVideoLoadTid = '';
-        } else if (this.videoDetailCurrentTid !== tid && this.videoDetailQueue.indexOf(tid) < 0) {
-          this.videoDetailQueue.push(tid);
-          this.processVideoDetailQueue();
+        } else if (this.threadDetailCurrentTid !== tid && this.threadDetailQueue.indexOf(tid) < 0) {
+          this.threadDetailQueue.push(tid);
+          this.processThreadDetailQueue();
         }
       }
       return;
     }
-    this.videoDetailRequests.push(tid);
-    this.videoDetailQueue.push(tid);
-    this.processVideoDetailQueue();
+    this.threadDetailRequests.push(tid);
+    this.threadDetailQueue.push(tid);
+    this.processThreadDetailQueue();
   }
 
-  private async processVideoDetailQueue(): Promise<void> {
-    if (this.videoDetailWorkerActive) return;
-    this.videoDetailWorkerActive = true;
-    while (this.videoDetailQueue.length > 0) {
-      const tid: string = this.videoDetailQueue.shift() ?? '';
+  private async processThreadDetailQueue(): Promise<void> {
+    if (this.threadDetailWorkerActive) return;
+    this.threadDetailWorkerActive = true;
+    while (this.threadDetailQueue.length > 0) {
+      const tid: string = this.threadDetailQueue.shift() ?? '';
       if (tid.length === 0) continue;
-      this.videoDetailCurrentTid = tid;
+      this.threadDetailCurrentTid = tid;
       let playable: boolean = false;
       try {
         const detail = await HupuApi.getThreadDetail(tid);
         const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
-        if (index >= 0 && detail.videoUrl.length > 0) {
+        if (index >= 0) {
           const nextRows: FeedRow[] = this.rows.slice();
-          nextRows[index].isVideo = true;
-          nextRows[index].videoUrl = detail.videoUrl;
-          if (nextRows[index].cover.length === 0) nextRows[index].cover = detail.videoCover;
-          if (detail.videoWidth > 0) nextRows[index].coverW = detail.videoWidth;
-          if (detail.videoHeight > 0) nextRows[index].coverH = detail.videoHeight;
-          this.rows = nextRows;
-          playable = true;
-          if (this.playAfterVideoLoadTid === tid) {
+          let changed: boolean = false;
+          if (detail.contentImages.length > 0 && nextRows[index].pics.length < 3) {
+            const images: string[] = [];
+            for (const imageUrl of detail.contentImages) {
+              if (imageUrl.length > 0 && images.indexOf(imageUrl) < 0 && images.length < 3) {
+                images.push(imageUrl);
+              }
+            }
+            if (images.length > nextRows[index].pics.length) {
+              nextRows[index].pics = images;
+              if (nextRows[index].cover.length === 0) nextRows[index].cover = images[0];
+              changed = true;
+            }
+          }
+          if (detail.videoUrl.length > 0) {
+            nextRows[index].isVideo = true;
+            nextRows[index].videoUrl = detail.videoUrl;
+            if (nextRows[index].cover.length === 0) nextRows[index].cover = detail.videoCover;
+            if (detail.videoWidth > 0) nextRows[index].coverW = detail.videoWidth;
+            if (detail.videoHeight > 0) nextRows[index].coverH = detail.videoHeight;
+            changed = true;
+            playable = true;
+          }
+          if (changed) this.rows = nextRows;
+          if (playable && this.playAfterVideoLoadTid === tid) {
             this.startPlay(tid);
             this.playAfterVideoLoadTid = '';
           }
@@ -410,9 +481,9 @@ export struct HomePage {
       } catch (e) {
       }
       if (!playable && this.playAfterVideoLoadTid === tid) this.playAfterVideoLoadTid = '';
-      this.videoDetailCurrentTid = '';
+      this.threadDetailCurrentTid = '';
     }
-    this.videoDetailWorkerActive = false;
+    this.threadDetailWorkerActive = false;
   }
 
   /** 单条映射（loadMore 追加时复用） */
@@ -578,6 +649,19 @@ export struct HomePage {
       setTimeout(() => {
         this.mutePressed = false;
       }, 0);
+    }
+  }
+
+  private async requestFeedVideoFullscreen(): Promise<void> {
+    await VideoOrientation.enterLandscape();
+    this.feedVideoController.requestFullscreen(true);
+  }
+
+  private onFeedVideoFullscreenChange(event: FullscreenInfo): void {
+    if (event.fullscreen) {
+      VideoOrientation.enterLandscape();
+    } else {
+      VideoOrientation.restorePortrait();
     }
   }
 
@@ -1682,6 +1766,7 @@ export struct HomePage {
             .muted(this.videoMuted)
             .loop(true)
             .controls(false)
+            .onFullscreenChange((event: FullscreenInfo) => this.onFeedVideoFullscreenChange(event))
             .objectFit(ImageFit.Cover)
             .width('100%')
             .height(this.mediaHeight(row))
@@ -1719,7 +1804,7 @@ export struct HomePage {
             if (row.videoUrl.length > 0) {
               this.startPlay(row.tid);
             } else {
-              this.requestVideoDetail(row.tid, true);
+              this.requestThreadDetail(row.tid, true);
             }
           })
         }
@@ -1767,7 +1852,7 @@ export struct HomePage {
                   setTimeout(() => this.videoTapPressed = false, 0);
                 }
               })
-              .onClick(() => this.feedVideoController.requestFullscreen(true))
+              .onClick(() => this.requestFeedVideoFullscreen())
           }
           if (row.videoDur.length > 0 && this.playingTid !== row.tid) {
             Text(row.videoDur)
@@ -2043,7 +2128,7 @@ export struct HomePage {
   ContentArea() {
     if (this.state === LoadState.Ready) {
       if (this.activeKind === ChannelKind.HOT) {
-        List({ space: 0 }) {
+        List({ space: 0, scroller: this.feedScroller }) {
           ForEach(this.ranks, (item: HotRankItem) => {
             ListItem() {
               Column() {
@@ -2073,6 +2158,7 @@ export struct HomePage {
         .width('100%')
         .height('100%')
         .scrollBar(BarState.Off)
+        .onDidScroll((offset: number, _state: ScrollState) => this.onFeedDidScroll(offset))
         .onTouchIntercept((): HitTestMode => {
           return this.feedTouchIntercept();
         })
@@ -2084,7 +2170,7 @@ export struct HomePage {
         })
       } else if (this.activeKind === ChannelKind.SCHEDULE) {
         Refresh({ refreshing: $$this.refreshing }) {
-          List({ space: 0 }) {
+          List({ space: 0, scroller: this.feedScroller }) {
             ForEach(this.days, (day: MatchDay) => {
               ListItem() {
                 Row() {
@@ -2114,6 +2200,7 @@ export struct HomePage {
           .width('100%')
           .height('100%')
           .scrollBar(BarState.Off)
+          .onDidScroll((offset: number, _state: ScrollState) => this.onFeedDidScroll(offset))
           .onTouchIntercept((): HitTestMode => {
             return this.feedTouchIntercept();
           })
@@ -2131,7 +2218,7 @@ export struct HomePage {
         .height('100%')
       } else {
         Refresh({ refreshing: $$this.refreshing }) {
-          List({ space: 0 }) {
+          List({ space: 0, scroller: this.feedScroller }) {
             if (this.activeChannelId === 'lol') {
               ListItem() {
                 Row({ space: 10 }) {
@@ -2213,10 +2300,13 @@ export struct HomePage {
                 .onAppear(() => {
                   const isReplyPreviewFeed: boolean = this.activeChannelId === 'lol'
                     || this.activeChannelId === 'recommend';
-                  if (isReplyPreviewFeed && row.lightReplyContent.length === 0 && row.replies > 0) {
+                  if (isReplyPreviewFeed && row.lightReplyContent.length === 0) {
                     this.requestLightReplyPreview(row.tid);
                   }
-                  if (row.isVideo && row.videoUrl.length === 0) this.requestVideoDetail(row.tid);
+                  if ((row.isVideo && row.videoUrl.length === 0)
+                    || (this.activeChannelId === 'lol' && !row.isVideo && row.cover.length > 0 && row.pics.length < 3)) {
+                    this.requestThreadDetail(row.tid);
+                  }
                 })
                 .onTouch((e: TouchEvent) => {
                   if (e.type === TouchType.Down) {
@@ -2242,6 +2332,7 @@ export struct HomePage {
           .width('100%')
           .height('100%')
           .scrollBar(BarState.Off)
+          .onDidScroll((offset: number, _state: ScrollState) => this.onFeedDidScroll(offset))
           .onTouchIntercept((): HitTestMode => {
             return this.feedTouchIntercept();
           })
@@ -2281,53 +2372,54 @@ export struct HomePage {
 
   build() {
     Column() {
-      Column() {
-        this.HeaderBar()
-      }
-      .width('100%')
-      .padding({ top: px2vp(this.topAvoidPx) })
-      .backgroundColor($r('app.color.bg_page'))
-
-      Row() {
-        List({ space: 18, scroller: this.channelScroller }) {
-          ForEach(this.channels, (c: ChannelDef, index: number) => {
-            ListItem() {
-              this.ChannelTab(c)
-            }
-            .margin({
-              left: index === 0 ? Spacing.lg : 0,
-              right: index === this.channels.length - 1 ? 4 : 0
-            })
-          }, (c: ChannelDef) => `ch_${c.id}`)
+      if (this.topBarsVisible) {
+        Column() {
+          this.HeaderBar()
         }
-        .listDirection(Axis.Horizontal)
-        .alignListItem(ListItemAlign.Center)
-        .scrollBar(BarState.Off)
-        .layoutWeight(1)
-        .height('100%')
-
-        Text('≡')
-          .fontSize(20)
-          .fontColor($r('app.color.text_secondary'))
-          .padding({ left: 8, right: Spacing.lg })
-          .onClick(() => {
-            this.pageStack.pushPathByName(RouteName.ALL_CHANNELS, '');
-          })
-      }
-      .width('100%')
-      .height(40)
-      .alignItems(VerticalAlign.Center)
-
-      if (this.staleTip) {
-        Row() {
-          Text('网络不太顺畅，正在展示稍早内容')
-            .fontSize(FontSize.caption)
-            .fontColor($r('app.color.text_secondary'))
-        }
-        .justifyContent(FlexAlign.Center)
         .width('100%')
-        .padding({ top: 4, bottom: 4 })
-        .backgroundColor($r('app.color.tag_bg'))
+        .backgroundColor($r('app.color.bg_page'))
+
+        Row() {
+          List({ space: 18, scroller: this.channelScroller }) {
+            ForEach(this.channels, (c: ChannelDef, index: number) => {
+              ListItem() {
+                this.ChannelTab(c)
+              }
+              .margin({
+                left: index === 0 ? Spacing.lg : 0,
+                right: index === this.channels.length - 1 ? 4 : 0
+              })
+            }, (c: ChannelDef) => `ch_${c.id}`)
+          }
+          .listDirection(Axis.Horizontal)
+          .alignListItem(ListItemAlign.Center)
+          .scrollBar(BarState.Off)
+          .layoutWeight(1)
+          .height('100%')
+
+          Text('≡')
+            .fontSize(20)
+            .fontColor($r('app.color.text_secondary'))
+            .padding({ left: 8, right: Spacing.lg })
+            .onClick(() => {
+              this.pageStack.pushPathByName(RouteName.ALL_CHANNELS, '');
+            })
+        }
+        .width('100%')
+        .height(40)
+        .alignItems(VerticalAlign.Center)
+
+        if (this.staleTip) {
+          Row() {
+            Text('网络不太顺畅，正在展示稍早内容')
+              .fontSize(FontSize.caption)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+          .padding({ top: 4, bottom: 4 })
+          .backgroundColor($r('app.color.tag_bg'))
+        }
       }
 
       Column() {
@@ -2344,6 +2436,7 @@ export struct HomePage {
     }
     .width('100%')
     .height('100%')
+    .padding({ top: px2vp(this.topAvoidPx) })
     .backgroundColor($r('app.color.bg_page'))
   }
 }

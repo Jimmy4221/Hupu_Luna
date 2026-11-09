@@ -333,6 +333,9 @@ interface SearchItemDto {
   content?: string;
   picture?: string;
   img?: string;
+  picList?: WsPicDto[];
+  pics?: WsPicDto[];
+  lightReplyResult?: WsLightReplyDto;
   header?: string;
   isMovie?: number | boolean;
   movie?: boolean;
@@ -853,6 +856,18 @@ export class HupuApi {
       item.replies = d.replies ?? 0;
       item.recommendCount = (d.lights ?? 0) > 0 ? d.lights ?? 0 : d.recNum ?? 0;
       item.coverUrl = (d.picture ?? '').length > 0 ? d.picture ?? '' : d.img ?? '';
+      const pics = d.picList ?? d.pics ?? [];
+      for (const pic of pics) {
+        const url: string = pic.url ?? '';
+        if (url.length > 0 && item.picUrls.length < 3) item.picUrls.push(url);
+      }
+      if (item.coverUrl.length === 0 && item.picUrls.length > 0) item.coverUrl = item.picUrls[0];
+      const lightReply = d.lightReplyResult;
+      if (lightReply) {
+        item.lightReplyContent = htmlToText(lightReply.content ?? '');
+        item.lightReplyUser = lightReply.replyUserName ?? '';
+        item.lightReplyCount = lightReply.lightCount ?? 0;
+      }
       item.isVideo = d.isMovie === 1 || d.isMovie === true || d.movie === true;
       item.videoDuration = d.duration ?? '';
       // 与资讯页首屏时间格式（MM-DD HH:MM）保持一致，避免两段展示风格割裂

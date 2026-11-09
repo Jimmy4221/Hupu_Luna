@@ -14,6 +14,7 @@ import { promptAction, display, uiAppearance } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { AppNavBar } from '../views/AppNavBar';
 import { ImageKnifeComponent } from '@ohos/imageknife';
+import { VideoOrientation } from '../common/VideoOrientation';
 
 /** 视频区尺寸（vp） */
 class VideoBox {
@@ -265,6 +266,19 @@ export struct PostDetailPage {
       setTimeout(() => {
         this.mutePressed = false;
       }, 0);
+    }
+  }
+
+  private async requestPostVideoFullscreen(): Promise<void> {
+    await VideoOrientation.enterLandscape();
+    this.videoController.requestFullscreen(true);
+  }
+
+  private onPostVideoFullscreenChange(event: FullscreenInfo): void {
+    if (event.fullscreen) {
+      VideoOrientation.enterLandscape();
+    } else {
+      VideoOrientation.restorePortrait();
     }
   }
 
@@ -537,6 +551,7 @@ export struct PostDetailPage {
           .muted(this.videoMuted)
           .loop(true)
           .controls(false)
+          .onFullscreenChange((event: FullscreenInfo) => this.onPostVideoFullscreenChange(event))
           .objectFit(ImageFit.Cover)
           .width('100%')
           .height('100%')
@@ -650,7 +665,7 @@ export struct PostDetailPage {
               .backgroundColor('#59000000')
               .borderRadius(15)
               .onTouch((e: TouchEvent) => this.onMuteTouch(e))
-              .onClick(() => this.videoController.requestFullscreen(true))
+              .onClick(() => this.requestPostVideoFullscreen())
           }
           .width('100%')
           .padding({ left: 10, right: 14, top: 8, bottom: 8 })
@@ -959,13 +974,6 @@ export struct PostDetailPage {
   @Builder
   PostReplySheet() {
     Column({ space: 0 }) {
-      Row() {
-        Text('×').fontSize(this.contentFontSize(26)).fontColor($r('app.color.text_secondary')).width(36)
-          .onClick(() => this.showPostReplySheet = false)
-        Text('查看回复').fontSize(this.contentFontSize(18)).fontWeight(this.contentFontWeight(FontWeight.Bold))
-          .fontColor($r('app.color.text_primary')).layoutWeight(1).textAlign(TextAlign.Center)
-        Text(' ').width(36)
-      }.width('100%').height(48).alignItems(VerticalAlign.Center)
       Scroll() {
         Column({ space: 12 }) {
           Column({ space: 8 }) {

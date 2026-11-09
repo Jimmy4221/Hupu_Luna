@@ -344,13 +344,6 @@ export struct LolPlayerRatingPage {
   @Builder
   ReplySheetBuilder() {
     Column({ space: 0 }) {
-      Row() {
-        Text('×').fontSize(this.readerSize(28)).fontColor($r('app.color.text_secondary')).width(36)
-          .onClick(() => this.showReplySheet = false)
-        Text('查看回复').fontSize(this.readerSize(19)).fontWeight(this.readerWeight(FontWeight.Bold))
-          .fontColor($r('app.color.text_primary')).layoutWeight(1).textAlign(TextAlign.Center)
-        Text(' ').width(36)
-      }.width('100%').height(46).alignItems(VerticalAlign.Center)
       Scroll() {
         Column({ space: 12 }) {
           this.CommentCard(this.selectedComment, false)

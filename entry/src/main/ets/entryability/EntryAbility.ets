@@ -72,6 +72,7 @@ export default class EntryAbility extends UIAbility {
       try {
         const win = windowStage.getMainWindowSync();
         this.mainWindow = win;
+        AppStorage.setOrCreate<Object>('mainWindow', win);
         // 沉浸式 + 系统栏透明 + 窗口背景随主题（须先于避让高度读取，确保全屏布局下数值正确）
         this.applyWindowChrome();
         // 状态栏避让高度（Tab 页自绘头部需要避开）
