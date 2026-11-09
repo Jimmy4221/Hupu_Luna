@@ -563,13 +563,18 @@ export struct HomePage {
         newHasMore = true;
         newPage = 1;
       } else if (ch.kind === ChannelKind.TOPIC) {
-        // 话题频道：PC 站分页流（支持无限滚动）
-        const res: ThreadListPage = ch.id === 'lol'
-          ? await HupuApi.getForumThreadsBySlug('lol', 1)
-          : await HupuApi.getForumThreads(ch.topicId, 1);
-        newRows = this.mapThreads(res.items, false);
+        // 搜索结果带图；配置了历史关键词的频道按 fid 过滤至对应板块。
+        if (ch.historyKeyword.length > 0) {
+          const found: ThreadListItem[] = await HupuApi.searchThreads(ch.historyKeyword, 1);
+          const items: ThreadListItem[] = found.filter((item: ThreadListItem) => item.fid === ch.topicId);
+          newRows = this.mapThreads(items, false);
+          newHasMore = found.length > 0;
+        } else {
+          const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, 1);
+          newRows = this.mapThreads(res.items, false);
+          newHasMore = res.hasMore;
+        }
         newCursor = '';
-        newHasMore = res.hasMore;
         newPage = 1;
       } else {
         const res: ThreadListPage = await HupuApi.getWalkingStreet(1, '');
@@ -927,11 +932,20 @@ export struct HomePage {
         this.cursor = res.cursor;
         this.hasMore = res.hasMore;
       } else {
-        // 普通话题频道：PC 站分页（第 N 页 = /{topicId}-{N}）
+        // 配置了搜索关键词的频道沿用带图搜索源分页。
         const nextPage: number = this.pageIndex + 1;
-        const res: ThreadListPage = ch.id === 'lol'
-          ? await HupuApi.getForumThreadsBySlug('lol', nextPage)
-          : await HupuApi.getForumThreads(ch.topicId, nextPage);
+        if (ch.historyKeyword.length > 0) {
+          const found: ThreadListItem[] = await HupuApi.searchThreads(ch.historyKeyword, nextPage);
+          const items: ThreadListItem[] = found.filter((item: ThreadListItem) => item.fid === ch.topicId);
+          if (seq !== this.loadSeq) {
+            return;
+          }
+          this.rows = this.rows.concat(this.mapThreads(items, false));
+          this.pageIndex = nextPage;
+          this.hasMore = found.length > 0;
+          return;
+        }
+        const res: ThreadListPage = await HupuApi.getForumThreads(ch.topicId, nextPage);
         if (seq !== this.loadSeq) {
           return;
         }
@@ -1951,6 +1965,19 @@ export struct HomePage {
       } else {
         Refresh({ refreshing: $$this.refreshing }) {
           List({ space: 0 }) {
+            if (this.activeChannelId === 'lol') {
+              ListItem() {
+                Row({ space: 10 }) {
+                  Column({ space: 3 }) {
+                    Text('英雄联盟赛事中心').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                    Text('LPL / 国际赛程 · 选手榜 · 评分对位').fontSize(11).fontColor($r('app.color.text_secondary'))
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  Text('进入 ›').fontSize(12).fontColor($r('app.color.brand_primary'))
+                }
+                .padding(Spacing.md).width('100%').backgroundColor($r('app.color.bg_card'))
+                .onClick(() => this.pageStack.pushPathByName(RouteName.LOL_MATCH_CENTER, ''))
+              }
+            }
             if (this.strip.length > 0) {
               ForEach(this.strip, (s: StripItem) => {
                 ListItem() {

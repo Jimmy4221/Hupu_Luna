@@ -17,6 +17,7 @@ import { CookieLoginPage } from './CookieLoginPage';
 import { UserSpacePage } from './UserSpacePage';
 import { CreateThreadPage } from './CreateThreadPage';
 import { LiveWebPage } from './LiveWebPage';
+import { LolMatchCenterPage } from './LolMatchCenterPage';
 import { RouteName } from '../common/Theme';
 import { hapticTap } from '../common/Haptics';
 import { SessionManager, HupuUserInfo } from '../network/SessionManager';
@@ -114,6 +115,8 @@ struct Index {
       CreateThreadPage({ param: this.createThreadParam() })
     } else if (name === RouteName.LIVE_WEB) {
       LiveWebPage({ param: this.pageStack.getParamByName(RouteName.LIVE_WEB)[0] as string })
+    } else if (name === RouteName.LOL_MATCH_CENTER) {
+      LolMatchCenterPage()
     } else {
       Column({ space: 8 }) {
         Text(name)
