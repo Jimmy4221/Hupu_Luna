@@ -150,6 +150,11 @@ export struct PostDetailPage {
     // 播放地址变化（缓存 → 网络最新链接）：重置播放态，等新视频就绪后重新自动播放
     const urlChanged: boolean = d.videoUrl !== this.detail.videoUrl;
     this.detail = d;
+    // Details and replies load concurrently. If an empty reply response arrived
+    // first, use the now-known reply count to expose the retry action.
+    if (d.replies > 0 && this.replies.length === 0 && this.replyState === LoadState.Empty) {
+      this.replyState = LoadState.Error;
+    }
     if (urlChanged) {
       this.videoReady = false;
       this.videoStarted = false;
