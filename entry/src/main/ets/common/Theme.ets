@@ -43,4 +43,7 @@ export class RouteName {
   static readonly LIVE_WEB: string = 'LiveWeb';
   static readonly LOL_MATCH_CENTER: string = 'LolMatchCenter';
   static readonly LOL_PLAYER_RATING: string = 'LolPlayerRating';
+  static readonly VIDEO_FULLSCREEN: string = 'VideoFullscreen';
+  static readonly HISTORY: string = 'History';
+  static readonly LOL_ALL_POSTS: string = 'LolAllPosts';
 }

@@ -1,17 +1,19 @@
 import { HupuApi } from '../network/HupuApi';
 import { NbaApi } from '../network/NbaApi';
 import { SoccerApi } from '../network/SoccerApi';
-import { ThreadListItem, ThreadListPage, ReplyItem, NbaNewsItem, MatchItem, MatchDay, HotRankItem, SoccerMatchItem } from '../model/Models';
+import { LolEsportsApi, LolFixture, LolMatchHighlights } from '../network/LolEsportsApi';
+import { ThreadListItem, ThreadListPage, ReplyItem, ReplyListPage, NbaNewsItem, MatchItem, MatchDay, HotRankItem, SoccerMatchItem } from '../model/Models';
 import { LoadState, StateView } from '../views/StateView';
 import { FeedSkeleton } from '../views/Skeleton';
 import { Spacing, FontSize, Radius, RouteName } from '../common/Theme';
-import { thumbUrl } from '../common/Utils';
+import { thumbUrl, parseFeedTime } from '../common/Utils';
 import { compactCount, formatHeat } from '../views/TagChip';
 import { ChannelDef, ChannelKind, ChannelCatalog } from '../common/Channels';
 import { OfficialAccounts } from '../common/OfficialAccounts';
 import { ChannelStore } from '../database/ChannelStore';
 import { CacheStore, CachedPayload } from '../database/CacheStore';
-import { VideoOrientation } from '../common/VideoOrientation';
+import { HistoryStore } from '../database/HistoryStore';
+import { VideoPlaybackResult } from './VideoFullscreenPage';
 import { ImageKnifeComponent } from '@ohos/imageknife';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
@@ -53,12 +55,56 @@ class FeedRow {
   lightReplyContent: string = '';
   lightReplyUser: string = '';
   lightReplyCount: number = 0;
+  /** 发帖时间（ms，0=未知） */
+  createTime: number = 0;
+  /** 最后回复时间（ms，0=未知） */
+  lastReplyTime: number = 0;
+  /** 置顶帖（服务端标记） */
+  pinned: boolean = false;
+  /** 官方号发文（排序加权 + 卡片标记） */
+  official: boolean = false;
+  /** 作者 puid（官方判定） */
+  authorPuid: string = '';
+  /** 已读（存在于浏览历史） */
+  read: boolean = false;
 }
 
 /** 媒体区尺寸（vp） */
 class MediaBox {
   w: number = 0;
   h: number = 0;
+}
+
+/** 信息流排序中间结果 */
+class RankedRow {
+  row: FeedRow = new FeedRow();
+  index: number = 0;
+  score: number = 0;
+}
+
+/** 时间未知的帖子在时间排序里统一沉底 */
+const UNKNOWN_TIME_MS: number = 9e15;
+
+/** 信息流「亮评」回填缓存（避免同一条帖子反复翻评论页） */
+class FeedLightReply {
+  content: string = '';
+  user: string = '';
+  count: number = 0;
+}
+
+/**
+ * 信息流详情回填缓存：
+ * 配图/封面可长期复用；视频直链带 auth_key，只在其时效内（2 小时）使用。
+ */
+class FeedEnrich {
+  /** 结构版本：旧缓存可能只有封面/空配图，版本不符直接作废重取 */
+  v: number = 2;
+  pics: string[] = [];
+  cover: string = '';
+  videoUrl: string = '';
+  videoCover: string = '';
+  videoWidth: number = 0;
+  videoHeight: number = 0;
 }
 
 /** 频道顶部比赛条 */
@@ -110,12 +156,19 @@ export struct HomePage {
   @StorageLink('channelIdsJson') @Watch('onChannelsChanged') channelIdsJson: string = '';
   @StorageLink('activeChannelId') @Watch('onActiveChanged') activeChannelId: string = '';
   @StorageLink('homeReselectTick') @Watch('onHomeReselected') homeReselectTick: number = 0;
+  /** 浏览历史变更（在别的页面读过帖子后回来，信息流同步已读态） */
+  @StorageLink('historyVersion') @Watch('onHistoryVersionChanged') historyVersion: number = 0;
+  /** 信息流排序：recommend / time_desc / time_asc / reply_desc / reply_asc */
+  @StorageLink('feedSortMode') @Watch('onFeedSortChanged') feedSortMode: string = 'recommend';
   @State channels: ChannelDef[] = [];
   @State rows: FeedRow[] = [];
   @State ranks: HotRankItem[] = [];
   @State days: MatchDay[] = [];
   @State strip: StripItem[] = [];
   @State activeLeague: string = '';
+  /** 英雄联盟频道顶部：最近一场赛果 / 下一场（数据来自赛程表） */
+  @State lolLast: LolFixture | null = null;
+  @State lolNext: LolFixture | null = null;
   @State state: LoadState = LoadState.Loading;
   @State refreshing: boolean = false;
   @State staleTip: boolean = false;
@@ -154,6 +207,8 @@ export struct HomePage {
   private officialDryPages: number = 0;
   /** 当前视频是否静音（默认静音，切换视频时复位） */
   @State videoMuted: boolean = true;
+  /** 信息流当前视频播放进度（进全屏时带上，返回时续播） */
+  private feedVideoSec: number = 0;
   /** 设置项：信息流（推荐频道）视频是否自动播放 */
   @StorageLink('autoplayFeed') @Watch('onAutoplayChanged') autoplayFeed: boolean = true;
   /** 静音按钮按下标记：防止点击穿透触发卡片的"打开帖子" */
@@ -375,6 +430,19 @@ export struct HomePage {
     this.processLightReplyQueue();
   }
 
+  /** 亮评落到对应信息流行 */
+  private applyLightReply(tid: string, content: string, user: string, count: number): void {
+    const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
+    if (index < 0) {
+      return;
+    }
+    const nextRows: FeedRow[] = this.rows.slice();
+    nextRows[index].lightReplyContent = content;
+    nextRows[index].lightReplyUser = user;
+    nextRows[index].lightReplyCount = count;
+    this.rows = nextRows;
+  }
+
   /** Backfill highlighted replies when the selected feed source omits its preview. */
   private async processLightReplyQueue(): Promise<void> {
     if (this.lightReplyWorkerActive) return;
@@ -383,32 +451,43 @@ export struct HomePage {
       const tid: string = this.lightReplyQueue.shift() ?? '';
       if (tid.length === 0) continue;
       this.lightReplyCurrentTid = tid;
+      // 先看本地缓存：同一帖子在缓存有效期内不再逐页翻评论
+      let servedFromCache: boolean = false;
       try {
-        let best: ReplyItem | null = null;
-        // Search2 does not consistently include reply counts; walk the first
-        // available reply pages and select the highest-light visible reply.
-        for (let page: number = 1; page <= 3; page++) {
-          const result = await HupuApi.getReplies(tid, page);
-          for (const item of result.items) {
-            if (item.content.length > 0 && (best === null || item.light > best.light)) best = item;
+        const cached: CachedPayload | null = await CacheStore.get(this.getCtx(), `feed/light/${tid}`);
+        if (cached !== null) {
+          const payload: FeedLightReply = JSON.parse(cached.json) as FeedLightReply;
+          if (payload.content.length > 0) {
+            this.applyLightReply(tid, payload.content, payload.user, payload.count);
+            servedFromCache = true;
           }
-          if (!result.hasMore) break;
-        }
-        if (best !== null) {
-          const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
-          if (index >= 0) {
-            const nextRows: FeedRow[] = this.rows.slice();
-            nextRows[index].lightReplyContent = best.content;
-            nextRows[index].lightReplyUser = best.userName;
-            nextRows[index].lightReplyCount = best.light;
-            this.rows = nextRows;
-          }
-        } else {
-          // Let a recycled card retry after a transient PC page/WAF failure.
-          const requestedIndex: number = this.lightReplyRequests.indexOf(tid);
-          if (requestedIndex >= 0) this.lightReplyRequests.splice(requestedIndex, 1);
         }
       } catch (e) {
+      }
+      if (servedFromCache) {
+        this.lightReplyCurrentTid = '';
+        continue;
+      }
+      let best: ReplyItem | null = null;
+      // 亮评预览只需要首屏：m 站帖子页首屏本身就是按亮数排序的，
+      // 再翻 PC 第 2/3 页（200~460KB）拿不到更高的亮评，反而拖慢整个队列。
+      try {
+        const result: ReplyListPage = await HupuApi.getReplies(tid, 1);
+        for (const item of result.items) {
+          if (item.content.length > 0 && (best === null || item.light > best.light)) best = item;
+        }
+      } catch (e) {
+        best = null;
+      }
+      if (best !== null) {
+        this.applyLightReply(tid, best.content, best.userName, best.light);
+        const payload: FeedLightReply = new FeedLightReply();
+        payload.content = best.content;
+        payload.user = best.userName;
+        payload.count = best.light;
+        CacheStore.put(this.getCtx(), `feed/light/${tid}`, JSON.stringify(payload));
+      } else {
+        // Let a recycled card retry after a transient failure.
         const requestedIndex: number = this.lightReplyRequests.indexOf(tid);
         if (requestedIndex >= 0) this.lightReplyRequests.splice(requestedIndex, 1);
       }
@@ -447,8 +526,48 @@ export struct HomePage {
       if (tid.length === 0) continue;
       this.threadDetailCurrentTid = tid;
       let playable: boolean = false;
+      // 先看本地缓存：图文帖配图/封面可长期复用；视频直链带 auth_key，超过 2 小时按失效处理
+      let needNetwork: boolean = true;
       try {
-        const detail = await HupuApi.getThreadDetail(tid);
+        const cached: CachedPayload | null = await CacheStore.get(this.getCtx(), `feed/enrich/${tid}`);
+        if (cached !== null) {
+          const enrich: FeedEnrich = JSON.parse(cached.json) as FeedEnrich;
+          if (enrich.v !== 2) {
+            // 旧版本缓存可能只存了封面/空配图：直接作废，重新取一次正文配图
+            needNetwork = true;
+          } else {
+            const rowBefore: FeedRow | undefined = this.rows.find((item: FeedRow) => item.tid === tid);
+            const wantsVideo: boolean = rowBefore !== undefined
+              && (rowBefore.isVideo || this.playAfterVideoLoadTid === tid);
+            const freshVideo: boolean = cached.ageMs < 2 * 3600 * 1000;
+            const videoUrl: string = freshVideo ? enrich.videoUrl : '';
+            this.applyEnrich(tid, enrich, videoUrl);
+            playable = videoUrl.length > 0;
+            // 1) 视频帖拿不到可用直链；2) 直链过期；3) 图文帖缓存里没有配图（旧的失败结果）
+            needNetwork = (wantsVideo && videoUrl.length === 0)
+              || (enrich.videoUrl.length > 0 && !freshVideo)
+              || (enrich.pics.length === 0 && rowBefore !== undefined
+                && rowBefore.cover.length > 0 && !rowBefore.isVideo);
+          }
+        }
+      } catch (e) {
+      }
+      if (!needNetwork) {
+        if (playable && this.playAfterVideoLoadTid === tid) {
+          this.startPlay(tid);
+        }
+        if (this.playAfterVideoLoadTid === tid) {
+          this.playAfterVideoLoadTid = '';
+        }
+        this.threadDetailCurrentTid = '';
+        continue;
+      }
+      try {
+        const rowForEnrich: FeedRow | undefined = this.rows.find((item: FeedRow) => item.tid === tid);
+        const wantsVideo: boolean = rowForEnrich !== undefined && rowForEnrich.isVideo;
+        const detail = wantsVideo
+          ? await HupuApi.getThreadDetail(tid)
+          : await HupuApi.getThreadDetailForFeed(tid);
         const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
         if (index >= 0) {
           const nextRows: FeedRow[] = this.rows.slice();
@@ -476,6 +595,15 @@ export struct HomePage {
             playable = true;
           }
           if (changed) this.rows = nextRows;
+          // 写回缓存：下次进入同一频道不再为这批卡片请求 PC 详情页
+          const enrich: FeedEnrich = new FeedEnrich();
+          enrich.pics = nextRows[index].pics.slice(0, 3);
+          enrich.cover = nextRows[index].cover;
+          enrich.videoUrl = detail.videoUrl;
+          enrich.videoCover = detail.videoCover;
+          enrich.videoWidth = detail.videoWidth;
+          enrich.videoHeight = detail.videoHeight;
+          CacheStore.put(this.getCtx(), `feed/enrich/${tid}`, JSON.stringify(enrich));
           if (playable && this.playAfterVideoLoadTid === tid) {
             this.startPlay(tid);
             this.playAfterVideoLoadTid = '';
@@ -487,6 +615,33 @@ export struct HomePage {
       this.threadDetailCurrentTid = '';
     }
     this.threadDetailWorkerActive = false;
+  }
+
+  /** 把缓存的详情补充信息（配图/封面/视频直链）合并进信息流行 */
+  private applyEnrich(tid: string, enrich: FeedEnrich, videoUrl: string): void {
+    const index: number = this.rows.findIndex((row: FeedRow) => row.tid === tid);
+    if (index < 0) {
+      return;
+    }
+    const nextRows: FeedRow[] = this.rows.slice();
+    let changed: boolean = false;
+    if (enrich.pics.length > nextRows[index].pics.length) {
+      nextRows[index].pics = enrich.pics.slice(0, 3);
+      changed = true;
+    }
+    if (nextRows[index].cover.length === 0 && enrich.cover.length > 0) {
+      nextRows[index].cover = enrich.cover;
+      changed = true;
+    }
+    if (videoUrl.length > 0) {
+      nextRows[index].isVideo = true;
+      nextRows[index].videoUrl = videoUrl;
+      if (nextRows[index].cover.length === 0) nextRows[index].cover = enrich.videoCover;
+      if (enrich.videoWidth > 0) nextRows[index].coverW = enrich.videoWidth;
+      if (enrich.videoHeight > 0) nextRows[index].coverH = enrich.videoHeight;
+      changed = true;
+    }
+    if (changed) this.rows = nextRows;
   }
 
   /** 单条映射（loadMore 追加时复用） */
@@ -520,10 +675,129 @@ export struct HomePage {
       row.lightReplyContent = t.lightReplyContent;
       row.lightReplyUser = t.lightReplyUser;
       row.lightReplyCount = t.lightReplyCount;
+      // 排序/已读：发帖时间、最后回复、置顶标记、是否读过
+      row.createTime = t.createTime;
+      row.lastReplyTime = t.lastReplyTime;
+      row.pinned = t.pinned;
+      row.authorPuid = t.authorPuid;
+      row.official = t.official || OfficialAccounts.isOfficialPuid(t.authorPuid)
+        || OfficialAccounts.isOfficial(t.userName);
+      row.read = HistoryStore.isRead(t.tid);
       // 关键：官方大卡样式标记（此前漏赋值，导致推荐频道仍走紧凑卡）
       row.officialCard = officialCard;
     }
     return row;
+  }
+
+  /**
+   * 当前频道是否为可排序的帖子流（推荐 / 话题，且不是资讯频道）。
+   */
+  private isPostFeedChannel(): boolean {
+    const ch: ChannelDef = ChannelCatalog.find(this.activeChannelId);
+    return (ch.kind === ChannelKind.TOPIC || ch.kind === ChannelKind.RECOMMEND) && ch.newsSource.length === 0;
+  }
+
+  /** 排序模式变化：立即按新模式重排当前列表 */
+  onFeedSortChanged(): void {
+    if (this.rows.length > 0 && this.isPostFeedChannel()) {
+      this.rows = this.sortRows(this.rows);
+    }
+  }
+
+  /** 追加分页数据：推荐排序保持追加顺序（滚动中不跳动），显式排序保持全局有序 */
+  private appendRows(more: FeedRow[]): void {
+    if (more.length === 0) {
+      return;
+    }
+    const merged: FeedRow[] = this.rows.concat(more);
+    this.rows = this.feedSortMode === 'recommend' ? merged : this.sortRows(merged);
+  }
+
+  /** 按当前排序模式排列：推荐=综合评分，其余按发帖/最后回复时间升降序（置顶帖始终在最前） */
+  private sortRows(rows: FeedRow[]): FeedRow[] {
+    if (this.feedSortMode === 'recommend') {
+      return this.rankFeed(rows);
+    }
+    const byReply: boolean = this.feedSortMode.indexOf('reply') === 0;
+    const ascending: boolean = this.feedSortMode.indexOf('asc') >= 0;
+    const pinned: FeedRow[] = [];
+    const rest: FeedRow[] = [];
+    for (const r of rows) {
+      if (r.pinned) {
+        pinned.push(r);
+      } else {
+        rest.push(r);
+      }
+    }
+    rest.sort((a: FeedRow, b: FeedRow): number => {
+      let ta: number = byReply ? a.lastReplyTime : a.createTime;
+      let tb: number = byReply ? b.lastReplyTime : b.createTime;
+      if (ta <= 0) ta = UNKNOWN_TIME_MS;
+      if (tb <= 0) tb = UNKNOWN_TIME_MS;
+      if (ta === tb) return 0;
+      return ascending ? ta - tb : tb - ta;
+    });
+    if (pinned.length === 0) {
+      return rest;
+    }
+    return pinned.concat(rest);
+  }
+
+  /**
+   * 信息流重排：置顶帖 → 未读溢价 + 新鲜度 + 互动量。
+   * 只排首屏；上拉追加页保持服务端顺序，避免滚动中列表跳动。
+   */
+  private rankFeed(rows: FeedRow[]): FeedRow[] {
+    if (rows.length <= 1) {
+      return rows;
+    }
+    const now: number = Date.now();
+    const ranked: RankedRow[] = [];
+    for (let i: number = 0; i < rows.length; i++) {
+      const r: RankedRow = new RankedRow();
+      r.row = rows[i];
+      r.index = i;
+      r.score = this.feedScore(rows[i], now);
+      ranked.push(r);
+    }
+    ranked.sort((a: RankedRow, b: RankedRow): number => {
+      if (a.score !== b.score) {
+        return b.score - a.score;
+      }
+      return a.index - b.index;
+    });
+    const out: FeedRow[] = [];
+    for (const r of ranked) {
+      out.push(r.row);
+    }
+    return out;
+  }
+
+  private feedScore(row: FeedRow, now: number): number {
+    if (row.pinned) {
+      return 1e9;
+    }
+    let score: number = 0;
+    // 官方号（虎扑官方资讯/平台号）优先，但权重远低于置顶
+    if (row.official) {
+      score += 120;
+    }
+    // 未读优先（读过的整体后移，但不会消失）
+    if (!row.read) {
+      score += 100;
+    }
+    // 新鲜度：以最后回复时间优先，其次发帖时间；72 小时内线性衰减
+    const t: number = row.lastReplyTime > 0 ? row.lastReplyTime : row.createTime;
+    if (t > 0) {
+      const hours: number = (now - t) / 3600000;
+      if (hours >= 0 && hours < 72) {
+        score += (72 - hours) * 1.6;
+      }
+    }
+    // 互动量：回复权重高于亮，取对数避免老热帖霸榜
+    score += Math.min(60, Math.log(row.replies + 1) / Math.LN2 * 7);
+    score += Math.min(30, Math.log(row.lights + 1) / Math.LN2 * 3);
+    return score;
   }
 
   /** 列表底部文案（官方频道到底时说明原因，避免用户以为内容缺失） */
@@ -641,6 +915,7 @@ export struct HomePage {
   private startPlay(tid: string): void {
     this.playingTid = tid;
     this.videoMuted = true;
+    this.feedVideoSec = 0;
   }
 
   /** 静音开关触摸：标记按下态，避免点击穿透到卡片触发"打开帖子" */
@@ -655,17 +930,31 @@ export struct HomePage {
     }
   }
 
-  private async requestFeedVideoFullscreen(): Promise<void> {
-    await VideoOrientation.enterLandscape();
-    this.feedVideoController.requestFullscreen(true);
-  }
-
-  private onFeedVideoFullscreenChange(event: FullscreenInfo): void {
-    if (event.fullscreen) {
-      VideoOrientation.enterLandscape();
-    } else {
-      VideoOrientation.restorePortrait();
+  /**
+   * 打开全屏播放页。
+   * 不用 VideoController.requestFullscreen：该接口只触发窗口旋转，画面不会真正铺满屏幕；
+   * 独立全屏页铺满窗口 + 横屏 + 隐藏系统栏，返回时按进度续播。
+   */
+  private openFeedFullscreen(row: FeedRow): void {
+    if (row.videoUrl.length === 0) {
+      return;
     }
+    this.feedVideoController.pause();
+    const param: string = `${row.videoUrl}||${this.feedVideoSec}||${this.videoMuted ? '1' : '0'}||${row.author}`;
+    this.pageStack.pushPathByName(RouteName.VIDEO_FULLSCREEN, param, (info: PopInfo) => {
+      const result: VideoPlaybackResult = info.result as VideoPlaybackResult;
+      if (result !== undefined && result !== null) {
+        this.videoMuted = result.muted;
+        if (result.position > 0) {
+          this.feedVideoSec = result.position;
+          this.feedVideoController.setCurrentTime(result.position);
+        }
+      }
+      // 全屏期间信息流一直处于暂停态，返回后按原播放目标续播
+      if (this.playingTid === row.tid) {
+        this.feedVideoController.start();
+      }
+    });
   }
 
   /** 滚动开始：暂停在播视频（滚动中反复起停体验差且费流量） */
@@ -698,6 +987,10 @@ export struct HomePage {
       row.time = n.publishTime.length >= 16 ? n.publishTime.substring(5, 16) : n.publishTime;
       row.meta = `${compactCount(n.replies)} 回复 · ${compactCount(n.lights)} 亮`;
       row.cover = n.img;
+      row.createTime = parseFeedTime(n.publishTime);
+      row.read = HistoryStore.isRead(n.tid);
+      row.replies = n.replies;
+      row.lights = n.lights;
       result.push(row);
     }
     return result;
@@ -724,6 +1017,94 @@ export struct HomePage {
       result.push(past[i]);
     }
     return result;
+  }
+
+  /**
+   * 英雄联盟频道顶部：最近一场赛果 + 下一场。
+   * 取腾讯赛程表（3 个赛事文件，10 分钟内存缓存），不触发虎扑 bizId 扫描。
+   */
+  private async loadLolHighlights(): Promise<void> {
+    try {
+      const h: LolMatchHighlights = await LolEsportsApi.getFeedHighlights();
+      this.lolLast = h.last;
+      this.lolNext = h.next;
+    } catch (e) {
+    }
+  }
+
+  /** "2026-11-15 03:00:00" → "11月15日 03:00" */
+  private fixtureTimeText(raw: string): string {
+    const ms: number = Date.parse(`${raw.replace(' ', 'T')}+08:00`);
+    if (!Number.isFinite(ms)) {
+      return raw;
+    }
+    const d: Date = new Date(ms);
+    const mo: number = d.getMonth() + 1;
+    const da: number = d.getDate();
+    const hh: number = d.getHours();
+    const mi: number = d.getMinutes();
+    return `${mo}月${da}日 ${hh < 10 ? '0' : ''}${hh}:${mi < 10 ? '0' : ''}${mi}`;
+  }
+
+  private fixtureTitle(item: LolFixture): string {
+    if (item.eventName.length === 0) {
+      return item.stage;
+    }
+    if (item.stage.length === 0) {
+      return item.eventName;
+    }
+    return `${item.eventName} · ${item.stage}`;
+  }
+
+  private openLolCenter(): void {
+    this.pageStack.pushPathByName(RouteName.LOL_MATCH_CENTER, '');
+  }
+
+  /** 最近赛果 → 直接进入该场比赛的评分对位 */
+  private openLolResult(item: LolFixture): void {
+    this.pageStack.pushPathByName(RouteName.LOL_MATCH_CENTER, `${item.teamA}||${item.teamB}||${item.matchTime}`);
+  }
+
+  /** 打开帖子：先本地落历史/已读（不等详情返回），返回时再刷一次行状态 */
+  private openPost(row: FeedRow): void {
+    if (row.tid.length === 0) {
+      return;
+    }
+    this.markRowRead(row);
+    this.pageStack.pushPathByName(RouteName.POST_DETAIL, row.tid, () => {
+      this.markRowRead(row);
+    });
+  }
+
+  /** 浏览历史变化（在别的页面读过帖子后回来）：同步当前列表的已读态 */
+  onHistoryVersionChanged(): void {
+    let changed: boolean = false;
+    const nextRows: FeedRow[] = this.rows.slice();
+    for (let i: number = 0; i < nextRows.length; i++) {
+      const read: boolean = HistoryStore.isRead(nextRows[i].tid);
+      if (nextRows[i].read !== read) {
+        nextRows[i].read = read;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.rows = nextRows;
+    }
+  }
+
+  /** 写入浏览历史并把当前行标为已读（key 含 read，会触发该行重建） */
+  private markRowRead(row: FeedRow): void {
+    HistoryStore.record(this.getCtx(), row.tid, row.title, row.author, row.tag, row.cover, row.replies);
+    if (row.read) {
+      return;
+    }
+    const index: number = this.rows.findIndex((item: FeedRow) => item.tid === row.tid);
+    if (index < 0) {
+      return;
+    }
+    const nextRows: FeedRow[] = this.rows.slice();
+    nextRows[index].read = true;
+    this.rows = nextRows;
   }
 
   /**
@@ -755,6 +1136,8 @@ export struct HomePage {
       this.ranks = [];
       this.days = [];
       this.strip = [];
+      this.lolLast = null;
+      this.lolNext = null;
       this.activeKind = ch.kind;
       this.activeLeague = ch.matchLeague;
       this.staleTip = false;
@@ -828,6 +1211,10 @@ export struct HomePage {
       if (seq !== this.loadSeq) {
         return;
       }
+      // 帖子流（推荐/话题/官方）：按当前排序模式排列；资讯频道（newsSource 非空）保持服务端时间序。
+      if (this.isPostFeedChannel()) {
+        newRows = this.sortRows(newRows);
+      }
       if (keepContent) {
         // 入场起始态：不可见 + 从切换反方向进入
         this.contentAlpha = 0;
@@ -837,6 +1224,9 @@ export struct HomePage {
       this.ranks = newRanks;
       this.days = newDays;
       this.strip = newStrip;
+      if (ch.id === 'lol') {
+        this.loadLolHighlights();
+      }
       // 官方频道：把首屏 tid 登记进去重集合，上拉捞历史时不会重复展示
       if (ch.officialSources.length > 0) {
         for (const r of newRows) {
@@ -938,6 +1328,14 @@ export struct HomePage {
       row.lightReplyContent = r.lightReplyContent ?? '';
       row.lightReplyUser = r.lightReplyUser ?? '';
       row.lightReplyCount = r.lightReplyCount ?? 0;
+      row.createTime = r.createTime ?? 0;
+      row.lastReplyTime = r.lastReplyTime ?? 0;
+      row.pinned = r.pinned === true;
+      row.authorPuid = r.authorPuid ?? '';
+      row.official = r.official === true || OfficialAccounts.isOfficialPuid(row.authorPuid)
+        || OfficialAccounts.isOfficial(row.author);
+      // 已读以本地历史为准（缓存快照可能早于最近一次阅读）
+      row.read = HistoryStore.isRead(row.tid);
       result.push(row);
     }
     return result;
@@ -1116,7 +1514,7 @@ export struct HomePage {
       }
     }
     if (fresh.length > 0) {
-      this.rows = this.rows.concat(fresh);
+      this.appendRows(fresh);
     }
     if (this.officialDryPages >= DRY_LIMIT) {
       this.hasMore = false;
@@ -1160,7 +1558,7 @@ export struct HomePage {
         if (seq !== this.loadSeq) {
           return;
         }
-        this.rows = this.rows.concat(this.mapThreads(res.items, true));
+        this.appendRows(this.mapThreads(res.items, true));
         this.pageIndex = this.pageIndex + 1;
         this.cursor = res.cursor;
         this.hasMore = res.hasMore;
@@ -1175,7 +1573,7 @@ export struct HomePage {
           const existing: Set<string> = new Set<string>();
           for (const row of this.rows) existing.add(row.tid);
           const newItems: ThreadListItem[] = batch.items.filter((item: ThreadListItem) => !existing.has(item.tid));
-          this.rows = this.rows.concat(this.mapThreads(newItems, ch.id === 'lol'));
+          this.appendRows(this.mapThreads(newItems, ch.id === 'lol'));
           this.pageIndex = batch.page;
           this.hasMore = batch.hasMore;
         } else {
@@ -1183,7 +1581,7 @@ export struct HomePage {
           if (seq !== this.loadSeq) {
             return;
           }
-          this.rows = this.rows.concat(this.mapThreads(res.items, ch.id === 'lol'));
+          this.appendRows(this.mapThreads(res.items, ch.id === 'lol'));
           this.pageIndex = this.pageIndex + 1;
           this.hasMore = res.hasMore;
         }
@@ -1535,6 +1933,138 @@ export struct HomePage {
       .padding({ top: 16, bottom: 24 })
   }
 
+  /** 英雄联盟频道顶部：最近赛果 + 下一场（同一张卡内两行，分隔线区隔） */
+  @Builder
+  LolHighlightsCard() {
+    Column({ space: 0 }) {
+      if (this.lolLast !== null) {
+        this.LolMatchRow(this.lolLast, true)
+      }
+      if (this.lolLast !== null && this.lolNext !== null) {
+        Divider().color($r('app.color.divider')).margin({ left: 2, right: 2 })
+      }
+      if (this.lolNext !== null) {
+        this.LolMatchRow(this.lolNext, false)
+      }
+    }
+    .width('100%')
+    .padding({ left: Spacing.md, right: Spacing.md, top: 2, bottom: 2 })
+    .backgroundColor($r('app.color.bg_card'))
+    .borderRadius(Radius.md)
+  }
+
+  @Builder
+  LolMatchRow(item: LolFixture, finished: boolean) {
+    Column({ space: 8 }) {
+      Row() {
+        Text(this.fixtureTitle(item))
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        Text(finished ? '已结束' : (item.status === '2' ? '进行中' : '未开赛'))
+          .fontSize(11)
+          .fontColor(finished ? $r('app.color.text_tertiary') : $r('app.color.brand_primary'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      Row() {
+        Row({ space: 8 }) {
+          Text(item.teamA.length > 0 ? item.teamA : '待定')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+            .textAlign(TextAlign.End)
+          if (item.teamALogo.length > 0) {
+            ImageKnifeComponent({ imageKnifeOption: { loadSrc: item.teamALogo, objectFit: ImageFit.Contain } })
+              .width(28)
+              .height(28)
+          }
+        }
+        .layoutWeight(1)
+        .alignItems(VerticalAlign.Center)
+
+        Column({ space: 2 }) {
+          if (finished || item.status === '2') {
+            Text(`${item.scoreA} - ${item.scoreB}`)
+              .fontSize(24)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+          } else {
+            Text(this.fixtureTimeText(item.matchTime))
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+          }
+        }
+        .width(120)
+        .alignItems(HorizontalAlign.Center)
+
+        Row({ space: 8 }) {
+          if (item.teamBLogo.length > 0) {
+            ImageKnifeComponent({ imageKnifeOption: { loadSrc: item.teamBLogo, objectFit: ImageFit.Contain } })
+              .width(28)
+              .height(28)
+          }
+          Text(item.teamB.length > 0 ? item.teamB : '待定')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+        }
+        .layoutWeight(1)
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      if (finished) {
+        Row({ space: 4 }) {
+          Blank()
+          Text('查看 JRs 评分')
+            .fontSize(12)
+            .fontColor($r('app.color.brand_primary'))
+          Text('›')
+            .fontSize(14)
+            .fontColor($r('app.color.brand_primary'))
+        }
+        .width('100%')
+      }
+    }
+    .width('100%')
+    .padding({ top: 10, bottom: 10 })
+    .onClick(() => {
+      if (finished) {
+        this.openLolResult(item);
+      } else {
+        this.openLolCenter();
+      }
+    })
+  }
+
+  @Builder
+  SortChip(label: string, mode: string) {
+    Text(label)
+      .fontSize(11)
+      .fontColor(this.feedSortMode === mode ? Color.White : $r('app.color.text_secondary'))
+      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+      .backgroundColor(this.feedSortMode === mode ? $r('app.color.brand_primary') : $r('app.color.tag_bg'))
+      .borderRadius(11)
+      .onClick(() => {
+        if (this.feedSortMode !== mode) {
+          this.feedSortMode = mode;
+          ChannelStore.saveFeedSort(this.getCtx(), mode);
+        }
+      })
+  }
+
   @Builder
   StripCard(s: StripItem) {
     Column({ space: 6 }) {
@@ -1620,7 +2150,9 @@ export struct HomePage {
 
   @Builder
   FeedCard(row: FeedRow) {
-    if (row.officialCard) {
+    // 英雄联盟频道固定走「推荐」大卡样式（视频 / 单图 / 双图 / 三图 / 纯文字），
+    // 即使缓存里的旧行没带 officialCard 标记也保持同一形态。
+    if (row.officialCard || this.activeChannelId === 'lol') {
       this.OfficialFeedCard(row)
     } else {
       this.CompactFeedCard(row)
@@ -1649,6 +2181,23 @@ export struct HomePage {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
+        if (row.official) {
+          Text('官方')
+            .fontSize(9)
+            .fontColor($r('app.color.brand_primary'))
+            .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+            .border({ width: 1, color: $r('app.color.brand_primary') })
+            .borderRadius(3)
+        }
+        if (row.read) {
+          Text('已读')
+            .fontSize(9)
+            .fontColor($r('app.color.text_secondary'))
+            .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+            .backgroundColor($r('app.color.tag_bg'))
+            .borderRadius(3)
+            .margin({ right: 6 })
+        }
         Text(row.time)
           .fontSize(11)
           .fontColor($r('app.color.text_tertiary'))
@@ -1656,12 +2205,12 @@ export struct HomePage {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      // 标题
+      // 标题（读过的帖子标题降一档灰度，便于快速区分已读/未读）
       Text(row.title)
         .fontSize(17)
         .fontWeight(FontWeight.Bold)
         .lineHeight(24)
-        .fontColor($r('app.color.text_primary'))
+        .fontColor(row.read ? $r('app.color.text_secondary') : $r('app.color.text_primary'))
         .maxLines(3)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
@@ -1774,7 +2323,9 @@ export struct HomePage {
             .muted(this.videoMuted)
             .loop(true)
             .controls(false)
-            .onFullscreenChange((event: FullscreenInfo) => this.onFeedVideoFullscreenChange(event))
+            .onUpdate((e: PlaybackInfo) => {
+              this.feedVideoSec = e.time;
+            })
             .objectFit(ImageFit.Cover)
             .width('100%')
             .height(this.mediaHeight(row))
@@ -1848,8 +2399,8 @@ export struct HomePage {
             Text('⛶')
               .fontSize(20)
               .fontColor(Color.White)
-              .width(30)
-              .height(30)
+              .width(28)
+              .height(28)
               .textAlign(TextAlign.Center)
               .backgroundColor('#59000000')
               .borderRadius(15)
@@ -1860,7 +2411,7 @@ export struct HomePage {
                   setTimeout(() => this.videoTapPressed = false, 0);
                 }
               })
-              .onClick(() => this.requestFeedVideoFullscreen())
+              .onClick(() => this.openFeedFullscreen(row))
           }
           if (row.videoDur.length > 0 && this.playingTid !== row.tid) {
             Text(row.videoDur)
@@ -1914,16 +2465,17 @@ export struct HomePage {
       .alignItems(VerticalAlign.Center)
 
       Text(row.lightReplyContent)
-        .fontSize(13)
-        .lineHeight(19)
-        .fontColor($r('app.color.text_secondary'))
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .lineHeight(20)
+        .fontColor(Color.White)
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
     }
     .width('100%')
     .padding(10)
-    .backgroundColor($r('app.color.bg_page'))
+    .backgroundColor($r('app.color.bg_card'))
     .borderRadius(8)
   }
 
@@ -1935,7 +2487,7 @@ export struct HomePage {
         Text(row.title)
           .fontSize(FontSize.title)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(row.read ? $r('app.color.text_secondary') : $r('app.color.text_primary'))
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
@@ -1945,6 +2497,22 @@ export struct HomePage {
               .fontSize(11)
               .fontColor($r('app.color.brand_primary'))
               .maxLines(1)
+          }
+          if (row.official) {
+            Text('官方')
+              .fontSize(9)
+              .fontColor($r('app.color.brand_primary'))
+              .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+              .border({ width: 1, color: $r('app.color.brand_primary') })
+              .borderRadius(3)
+          }
+          if (row.read) {
+            Text('已读')
+              .fontSize(9)
+              .fontColor($r('app.color.text_secondary'))
+              .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+              .backgroundColor($r('app.color.tag_bg'))
+              .borderRadius(3)
           }
           if (row.author.length > 0) {
             Text(row.author)
@@ -2144,7 +2712,7 @@ export struct HomePage {
                 Divider().color($r('app.color.divider'))
               }
               .padding({ left: Spacing.lg, right: Spacing.lg })
-              .backgroundColor($r('app.color.bg_card'))
+              .backgroundColor($r('app.color.bg_feed'))
               .onTouch((e: TouchEvent) => {
                 if (e.type === TouchType.Down) {
                   this.itemTouchDown(e);
@@ -2199,7 +2767,7 @@ export struct HomePage {
                     Divider().color($r('app.color.divider'))
                   }
                   .padding({ left: Spacing.lg, right: Spacing.lg })
-                  .backgroundColor($r('app.color.bg_card'))
+                  .backgroundColor($r('app.color.bg_feed'))
                 }
               }, (m: MatchItem, idx: number) => `${day.day}_${m.matchId}_${idx}`)
             }, (day: MatchDay) => `day_${day.day}`)
@@ -2228,16 +2796,31 @@ export struct HomePage {
         Refresh({ refreshing: $$this.refreshing }) {
           List({ space: 0, scroller: this.feedScroller }) {
             if (this.activeChannelId === 'lol') {
-              ListItem() {
-                Row({ space: 10 }) {
-                  Column({ space: 3 }) {
-                    Text('英雄联盟赛事中心').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                    Text('LPL / 国际赛程 · 选手榜 · 评分对位').fontSize(11).fontColor($r('app.color.text_secondary'))
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  Text('进入 ›').fontSize(12).fontColor($r('app.color.brand_primary'))
+              if (this.lolLast !== null || this.lolNext !== null) {
+                ListItem() {
+                  Column() {
+                    this.LolHighlightsCard()
+                  }
+                  .width('100%')
+                  .padding({ left: Spacing.lg, right: Spacing.lg, top: 10, bottom: 2 })
+                  .backgroundColor($r('app.color.bg_feed'))
                 }
-                .padding(Spacing.md).width('100%').backgroundColor($r('app.color.bg_card'))
-                .onClick(() => this.pageStack.pushPathByName(RouteName.LOL_MATCH_CENTER, ''))
+              }
+              // 默认信息流只保留高质量的帖子；完整「英雄联盟区」帖子流从这里进入
+              ListItem() {
+                Row({ space: 6 }) {
+                  Text('英雄联盟 · 全部帖子')
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                  Blank()
+                  Text('查看 ›')
+                    .fontSize(12)
+                    .fontColor($r('app.color.brand_primary'))
+                }
+                .width('100%')
+                .padding({ left: Spacing.lg, right: Spacing.lg, top: 8, bottom: 8 })
+                .backgroundColor($r('app.color.bg_feed'))
+                .onClick(() => this.pageStack.pushPathByName(RouteName.LOL_ALL_POSTS, ''))
               }
             }
             if (this.strip.length > 0) {
@@ -2248,7 +2831,7 @@ export struct HomePage {
                     Divider().color($r('app.color.divider'))
                   }
                   .padding({ left: Spacing.lg, right: Spacing.lg })
-                  .backgroundColor($r('app.color.bg_card'))
+                  .backgroundColor($r('app.color.bg_feed'))
                   .onTouch((e: TouchEvent) => {
                     if (e.type === TouchType.Down) {
                       this.itemTouchDown(e);
@@ -2282,7 +2865,7 @@ export struct HomePage {
                   .justifyContent(FlexAlign.Center)
                   Divider().color($r('app.color.divider'))
                 }
-                .backgroundColor($r('app.color.bg_card'))
+                .backgroundColor($r('app.color.bg_feed'))
                 .onTouch((e: TouchEvent) => {
                   if (e.type === TouchType.Down) {
                     this.itemTouchDown(e);
@@ -2304,11 +2887,11 @@ export struct HomePage {
                   Divider().color($r('app.color.divider'))
                 }
                 .padding({ left: Spacing.lg, right: Spacing.lg })
-                .backgroundColor($r('app.color.bg_card'))
+                .backgroundColor($r('app.color.bg_feed'))
                 .onAppear(() => {
                   const isReplyPreviewFeed: boolean = this.activeChannelId === 'lol'
                     || this.activeChannelId === 'recommend';
-                  if (isReplyPreviewFeed && row.lightReplyContent.length === 0) {
+                  if (isReplyPreviewFeed && row.lightReplyContent.length === 0 && row.replies > 0) {
                     this.requestLightReplyPreview(row.tid);
                   }
                   if ((row.isVideo && row.videoUrl.length === 0)
@@ -2323,12 +2906,16 @@ export struct HomePage {
                     this.itemTouchMove(e);
                   } else if (e.type === TouchType.Up) {
                     if (this.isValidTap() && row.tid.length > 0) {
-                      this.pageStack.pushPathByName(RouteName.POST_DETAIL, row.tid);
+                      this.openPost(row);
                     }
                   }
                 })
               }
-            }, (row: FeedRow, idx: number) => `${row.tid}_${idx}`)
+            }, (row: FeedRow, idx: number) =>
+              // 关键：ForEach 复用相同 key 的子组件、不会重跑 item builder，
+              // 信息流是「先出封面/无亮评，再异步补配图与亮评」，必须把这三个可变字段
+              // 纳入 key，补数据后才会重建该行（否则界面永远停在首屏形态）。
+              `${row.tid}_${idx}_${row.pics.length}_${row.lightReplyContent.length}_${row.videoUrl.length > 0 ? 1 : 0}_${row.read ? 1 : 0}`)
             ListItem() {
               this.Footer(this.footerText())
             }
@@ -2416,6 +3003,23 @@ export struct HomePage {
         .width('100%')
         .height(40)
         .alignItems(VerticalAlign.Center)
+
+        // 排序条：仅帖子流显示（热榜/赛程/资讯保持原顺序）
+        if (this.isPostFeedChannel()) {
+          Scroll() {
+            Row({ space: 6 }) {
+              this.SortChip('推荐', 'recommend')
+              this.SortChip('最新发布', 'time_desc')
+              this.SortChip('最早发布', 'time_asc')
+              this.SortChip('最后回复', 'reply_desc')
+              this.SortChip('最早回复', 'reply_asc')
+            }
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off)
+          .width('100%')
+          .padding({ left: Spacing.lg, right: Spacing.lg, bottom: 6 })
+        }
 
         if (this.staleTip) {
           Row() {

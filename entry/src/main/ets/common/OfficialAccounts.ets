@@ -84,6 +84,43 @@ export class OfficialAccounts {
 
   private static index: Map<string, boolean> = OfficialAccounts.buildIndex();
 
+  /**
+   * 官方账号 puid 名单（2026-11-10 用 m 站用户搜索逐个核对得到的稳定 id）。
+   * 判定优先级：puid 命中即官方（昵称可改）；puid 缺失/未收录时回退到上面的名称白名单。
+   * 说明：部分账号在搜索里返回的是同名资讯号（如"虎扑篮球"→虎扑篮球资讯），
+   * 这些 puid 本身都属于官方矩阵，不会把普通用户误判成官方。
+   */
+  private static readonly PUIDS: string[] = [
+    '56098302', '83276249', '93956731', '94991862', '55150048', '112474163',
+    '112446935', '113542777', '114967071', '83667515', '77407675', '15796935',
+    '4243621', '458576', '16243921', '47535659', '66448292', '113585027',
+    '94962245', '74596909', '39007239', '57686982', '4974481', '81734216',
+    '16178073', '25984544', '89194520', '94991863', '3318253', '96772459',
+    '95497209', '17084670', '71581274', '113222765', '26172482', '184216',
+    '96772422', '113251890', '52694202', '96728848', '114411892', '96728845',
+    '58964580', '113175218', '119261326', '94960073', '38735068', '39263752',
+    '94942949', '60302197', '32871345', '14513993', '17215809', '4168925',
+    '25948', '18912543'
+  ];
+
+  private static puidIndex: Map<string, boolean> = OfficialAccounts.buildPuidIndex();
+
+  private static buildPuidIndex(): Map<string, boolean> {
+    const map: Map<string, boolean> = new Map<string, boolean>();
+    for (const p of OfficialAccounts.PUIDS) {
+      map.set(p, true);
+    }
+    return map;
+  }
+
+  /** 是否官方账号（按 puid 精确匹配，最稳） */
+  static isOfficialPuid(puid: string): boolean {
+    if (puid.length === 0) {
+      return false;
+    }
+    return OfficialAccounts.puidIndex.get(puid) === true;
+  }
+
   private static buildIndex(): Map<string, boolean> {
     const map: Map<string, boolean> = new Map<string, boolean>();
     for (const n of OfficialAccounts.NAMES) {

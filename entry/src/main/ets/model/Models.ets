@@ -37,6 +37,16 @@ export class ThreadListItem {
   lightReplyContent: string = '';
   lightReplyUser: string = '';
   lightReplyCount: number = 0;
+  /** 发帖时间（ms，0=未知） */
+  createTime: number = 0;
+  /** 最后回复时间（ms，0=未知） */
+  lastReplyTime: number = 0;
+  /** 置顶帖（服务端标记，如步行街 topThread） */
+  pinned: boolean = false;
+  /** 官方号发文（puid 白名单为主、作者名兜底） */
+  official: boolean = false;
+  /** 作者 puid（官方判定/去重用，缺失为空） */
+  authorPuid: string = '';
 }
 
 /** 帖子流响应包 */

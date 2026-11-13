@@ -30,6 +30,8 @@ class LolLeaderboardRow {
 
 @Component
 export struct LolMatchCenterPage {
+  /** 可选参数："teamA||teamB||matchTime" —— 从信息流「最近赛果」直接进入该场评分对位 */
+  param: string = '';
   @Consume('pageStack') pageStack: NavPathStack;
   @State fixtures: LolFixture[] = [];
   @State matches: LolMatchNode[] = [];
@@ -44,6 +46,8 @@ export struct LolMatchCenterPage {
   @State detailLoading: boolean = false;
   @State boardLoading: boolean = false;
   @State laneLoading: boolean = false;
+  /** 分路数据缺失（国际赛事/新选手）时，改用两队双列摘要，保证名字与分数始终可见 */
+  @State laneFallback: boolean = false;
   @State lookupFixture: LolFixture | null = null;
   @State lookupMessage: string = '';
   @StorageLink('readerFontScale') readerFontScale: number = 0;
@@ -59,6 +63,16 @@ export struct LolMatchCenterPage {
 
   aboutToAppear(): void {
     this.loadFixtures();
+    if (this.param.length > 0) {
+      const parts: string[] = this.param.split('||');
+      if (parts.length >= 3) {
+        const fixture: LolFixture = new LolFixture();
+        fixture.teamA = parts[0];
+        fixture.teamB = parts[1];
+        fixture.matchTime = parts[2];
+        this.openFixture(fixture);
+      }
+    }
   }
 
   private async loadFixtures(): Promise<void> {
@@ -112,11 +126,18 @@ export struct LolMatchCenterPage {
     this.games = [];
     this.scores = [];
     this.laneMatchups = [];
-    await this.loadMatchNodes();
-    let match: LolMatchNode | null = this.matchForFixture(item);
-    if (match === null) {
-      await this.loadMatchNodes(true);
+    this.laneFallback = false;
+    // 可靠优先：本地已有比赛列表就直接匹配；没有就先把列表补齐（有持久化缓存，通常零请求），
+    // 最后才用搜索接口按队名反查。
+    let match: LolMatchNode | null = this.matches.length > 0 ? this.matchForFixture(item) : null;
+    if (match === null && this.matches.length === 0) {
+      this.lookupMessage = '正在匹配评分数据…';
+      await this.loadMatchNodes();
       match = this.matchForFixture(item);
+    }
+    if (match === null) {
+      this.lookupMessage = '正在匹配评分数据…';
+      match = await LolEsportsApi.findMatchForTeams(item.teamA, item.teamB, item.matchTime);
     }
     if (match === null) {
       this.lookupMessage = '暂时没有匹配到虎扑评分数据。赛程和比赛结果仍可查看。';
@@ -133,9 +154,11 @@ export struct LolMatchCenterPage {
     this.selectedGame = null;
     this.games = [];
     this.scores = [];
+    this.laneFallback = false;
     this.detailLoading = true;
     try {
-      this.games = await LolEsportsApi.getGames(match.bizId);
+      // 比赛详情节点自带对局列表（getMatch 已解析），有就不再打 children 接口
+      this.games = match.games.length > 0 ? match.games.slice() : await LolEsportsApi.getGames(match.bizId);
       if (this.games.length > 0) {
         this.selectedGame = this.games[0];
         this.scores = await LolEsportsApi.getGameScores(this.games[0].bizId);
@@ -150,6 +173,7 @@ export struct LolMatchCenterPage {
 
   private async selectGame(game: LolGameNode): Promise<void> {
     this.selectedGame = game;
+    this.laneFallback = false;
     this.detailLoading = true;
     try {
       this.scores = await LolEsportsApi.getGameScores(game.bizId);
@@ -169,7 +193,7 @@ export struct LolMatchCenterPage {
     const recent: LolMatchNode[] = this.matches.slice(0, 8);
     for (const match of recent) {
       try {
-        const games: LolGameNode[] = await LolEsportsApi.getGames(match.bizId);
+        const games: LolGameNode[] = match.games.length > 0 ? match.games : await LolEsportsApi.getGames(match.bizId);
         for (const game of games) {
           const roster: LolPlayerScore[] = await LolEsportsApi.getGameScores(game.bizId);
           for (const p of roster) {
@@ -244,7 +268,10 @@ export struct LolMatchCenterPage {
     try {
       await LolEsportsApi.savePlayerScore(p.bizId, value);
       this.getUIContext().getPromptAction().showToast({ message: `已提交 ${value} 分` });
-      if (this.selectedGame !== null) this.scores = await LolEsportsApi.getGameScores(this.selectedGame.bizId);
+      if (this.selectedGame !== null) {
+        await LolEsportsApi.invalidateGameScores(this.selectedGame.bizId);
+        this.scores = await LolEsportsApi.getGameScores(this.selectedGame.bizId);
+      }
     } catch (e) {
       const err = e as Error;
       this.getUIContext().getPromptAction().showToast({ message: err.message });
@@ -281,20 +308,62 @@ export struct LolMatchCenterPage {
       rows.push(row);
     }
     const match: LolMatchNode = this.selectedMatch;
-    const leftPlayers: LolPlayerScore[] = this.teamScores(match.teamAId);
-    const rightPlayers: LolPlayerScore[] = this.teamScores(match.teamBId);
-    for (const player of leftPlayers) {
-      const lane: number = await LolEsportsApi.getPlayerLane(match.teamA, player.name);
-      const row: LolLaneMatchup | undefined = rows.find((entry: LolLaneMatchup) => entry.roleCode === lane);
-      if (row !== undefined) row.left = player;
-    }
-    for (const player of rightPlayers) {
-      const lane: number = await LolEsportsApi.getPlayerLane(match.teamB, player.name);
-      const row: LolLaneMatchup | undefined = rows.find((entry: LolLaneMatchup) => entry.roleCode === lane);
-      if (row !== undefined) row.right = player;
-    }
+    const leftAssigned: number = await this.assignSide(rows, this.teamScores(match.teamAId), match.teamA, true);
+    const rightAssigned: number = await this.assignSide(rows, this.teamScores(match.teamBId), match.teamB, false);
+    // 任一方完全拿不到分路数据（国际赛事队伍在 LPL 名单里没有）时改用两队双列摘要，
+    // 而不是让顶部摘要空着——底部评分卡本来就有完整的名字与分数。
+    this.laneFallback = leftAssigned === 0 || rightAssigned === 0;
     this.laneMatchups = rows.filter((row: LolLaneMatchup) => row.left !== null || row.right !== null);
     this.laneLoading = false;
+  }
+
+  /** 按分路把一队选手填进对应行；分路缺失的选手补进空位，保证摘要里不丢人 */
+  private async assignSide(rows: LolLaneMatchup[], players: LolPlayerScore[], teamName: string,
+    isLeft: boolean): Promise<number> {
+    let assigned: number = 0;
+    const unresolved: LolPlayerScore[] = [];
+    for (const player of players) {
+      const lane: number = await LolEsportsApi.getPlayerLane(teamName, player.name);
+      const row: LolLaneMatchup | undefined = rows.find((entry: LolLaneMatchup) => entry.roleCode === lane);
+      const free: boolean = row !== undefined && (isLeft ? row.left === null : row.right === null);
+      if (row !== undefined && free) {
+        if (isLeft) {
+          row.left = player;
+        } else {
+          row.right = player;
+        }
+        assigned++;
+      } else {
+        unresolved.push(player);
+      }
+    }
+    for (const player of unresolved) {
+      const row: LolLaneMatchup | undefined = rows.find((entry: LolLaneMatchup) =>
+        isLeft ? entry.left === null : entry.right === null);
+      if (row === undefined) break;
+      if (isLeft) {
+        row.left = player;
+      } else {
+        row.right = player;
+      }
+    }
+    return assigned;
+  }
+
+  /** 双列兜底数据：两队按各自阵容顺序并排 */
+  private summaryRows(): LolLaneMatchup[] {
+    const rows: LolLaneMatchup[] = [];
+    if (this.selectedMatch === null) return rows;
+    const left: LolPlayerScore[] = this.teamScores(this.selectedMatch.teamAId);
+    const right: LolPlayerScore[] = this.teamScores(this.selectedMatch.teamBId);
+    const count: number = Math.max(left.length, right.length);
+    for (let i: number = 0; i < count; i++) {
+      const row: LolLaneMatchup = new LolLaneMatchup();
+      row.left = i < left.length ? left[i] : null;
+      row.right = i < right.length ? right[i] : null;
+      rows.push(row);
+    }
+    return rows;
   }
 
   @Builder
@@ -312,6 +381,46 @@ export struct LolMatchCenterPage {
     }
   }
 
+  /** 分路数据缺失时的两队双列摘要：名字 + 均分，始终可见 */
+  @Builder
+  TeamSummaryRows() {
+    Row() {
+      Text(this.selectedMatch?.teamA ?? '').fontSize(this.readerSize(13)).fontColor('#F05B68')
+        .layoutWeight(1).maxLines(1)
+      Text('选手均分').fontSize(this.readerSize(12)).fontColor($r('app.color.text_tertiary'))
+        .width(64).textAlign(TextAlign.Center)
+      Text(this.selectedMatch?.teamB ?? '').fontSize(this.readerSize(13)).fontColor('#6F9FE8')
+        .layoutWeight(1).textAlign(TextAlign.End).maxLines(1)
+    }.width('100%').padding({ top: 3, bottom: 3 })
+
+    ForEach(this.summaryRows(), (row: LolLaneMatchup, index: number) => {
+      Row({ space: 6 }) {
+        Row() {
+          Text(row.left?.name ?? '—').fontSize(this.readerSize(14)).fontColor($r('app.color.text_primary'))
+            .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .onClick(() => {
+              if (row.left !== null) this.openRating(row.left);
+            })
+          Text(row.left !== null && row.left.score > 0 ? row.left.score.toFixed(1) : '—')
+            .fontSize(this.readerSize(15)).fontWeight(this.readerWeight(FontWeight.Bold)).fontColor('#F05B68')
+        }.layoutWeight(1)
+
+        Column().width(20)
+
+        Row() {
+          Text(row.right !== null && row.right.score > 0 ? row.right.score.toFixed(1) : '—')
+            .fontSize(this.readerSize(15)).fontWeight(this.readerWeight(FontWeight.Bold)).fontColor('#6F9FE8')
+          Text(row.right?.name ?? '—').fontSize(this.readerSize(14)).fontColor($r('app.color.text_primary'))
+            .layoutWeight(1).textAlign(TextAlign.End).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .onClick(() => {
+              if (row.right !== null) this.openRating(row.right);
+            })
+        }.layoutWeight(1)
+      }.width('100%').alignItems(VerticalAlign.Center).padding({ top: 2, bottom: 2 })
+    }, (row: LolLaneMatchup, index: number) =>
+      `summary_${index}_${row.left?.bizId ?? ''}_${row.right?.bizId ?? ''}`)
+  }
+
   @Builder
   LaneSummary() {
     Column({ space: 7 }) {
@@ -325,9 +434,8 @@ export struct LolMatchCenterPage {
           LoadingProgress().width(15).height(15).color($r('app.color.brand_primary'))
           Text('正在匹配选手位置').fontSize(this.readerSize(13)).fontColor($r('app.color.text_secondary'))
         }.width('100%').justifyContent(FlexAlign.Center).padding({ top: 4, bottom: 4 })
-      } else if (this.laneMatchups.length === 0) {
-        Text('官方阵容位置暂不可用').fontSize(this.readerSize(13)).fontColor($r('app.color.text_tertiary'))
-          .width('100%').textAlign(TextAlign.Center).padding({ top: 4, bottom: 4 })
+      } else if (this.laneFallback || this.laneMatchups.length === 0) {
+        this.TeamSummaryRows()
       } else {
         Row() {
           Text(this.selectedMatch?.teamA ?? '').fontSize(this.readerSize(13)).fontColor('#F05B68')

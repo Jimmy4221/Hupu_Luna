@@ -17,7 +17,8 @@ import {
   UserSpaceData,
   TopicInfo
 } from '../model/Models';
-import { htmlToText, extractImages, formatTime } from '../common/Utils';
+import { htmlToText, extractImages, formatTime, parseFeedTime } from '../common/Utils';
+import { OfficialAccounts } from '../common/OfficialAccounts';
 
 const BASE: string = 'https://m.hupu.com';
 const PC_BASE: string = 'https://bbs.hupu.com';
@@ -33,6 +34,8 @@ const ITEM_MARK: string = '<li class="bbs-sl-web-post-body"';
 const REG_TITLE: RegExp = new RegExp('href="/(\\d+)\\.html"[^>]*class="p-title"[^>]*>([^<]*)<');
 const REG_DATUM: RegExp = new RegExp('class="post-datum">([^<]*)<');
 const REG_AUTH: RegExp = new RegExp('class="post-auth"><a[^>]*>([^<]*)<');
+/** post-auth 里的作者主页链接：https://my.hupu.com/{euid} */
+const REG_AUTH_PUID: RegExp = new RegExp('class="post-auth"><a href="https?://my\\.hupu\\.com/(\\d+)"');
 const REG_POSTTIME: RegExp = new RegExp('class="post-time">([^<]*)<');
 
 /* PC 话题页头部（专区信息） */
@@ -75,6 +78,8 @@ interface WsThreadDto {
   title?: string;
   userName?: string;
   userHeader?: string;
+  /** 作者 puid（官方判定用） */
+  puid?: string | number;
   time?: string;
   replies?: number;
   recommendCount?: number;
@@ -86,6 +91,8 @@ interface WsThreadDto {
   video?: WsVideoDto;
   picList?: WsPicDto[];
   lightReplyResult?: WsLightReplyDto;
+  /** 置顶帖标记 */
+  topThread?: boolean;
 }
 
 interface WsDataDto {
@@ -242,6 +249,55 @@ interface PcNextRespDto {
   props?: PcPropsDto;
 }
 
+/* m 站帖子页（m.hupu.com/bbs/{tid}.html）：首屏回复兜底数据源。
+ * 与 PC 详情页的 detail.replies.list 完全同序同内容，页面体积只有 PC 页的 1/4，
+ * PC 页被风控/限制访问（detailErrorInfo 4046）时仍可用。 */
+
+interface MobReplyUserDto {
+  puid?: string | number;
+  username?: string;
+  header?: string;
+}
+
+interface MobReplyDto {
+  pid?: string | number;
+  user?: MobReplyUserDto;
+  content?: string;
+  images?: string[];
+  light?: string | number;
+  allLightCount?: string | number;
+  replies?: string | number;
+  createDt?: string;
+  location?: string;
+  is_lz?: number;
+}
+
+interface MobRepliesDto {
+  initialReplies?: MobReplyDto[];
+  initialHasMore?: boolean;
+}
+
+interface MobThreadDetailDto {
+  replies?: string | number;
+}
+
+interface MobThreadInfoDto {
+  t_detail?: MobThreadDetailDto;
+}
+
+interface MobPagePropsDto {
+  threadInfo?: MobThreadInfoDto;
+  initialRepliesData?: MobRepliesDto;
+}
+
+interface MobPropsDto {
+  pageProps?: MobPagePropsDto;
+}
+
+interface MobNextRespDto {
+  props?: MobPropsDto;
+}
+
 /* 用户主页（m.hupu.com/user/{puid} 公开页） */
 
 interface UspReputationDto {
@@ -345,6 +401,10 @@ interface SearchItemDto {
   /** 板块 fid（官方资讯历史按此过滤到目标频道） */
   fid?: number;
   addtime?: number;
+  /** 最后回复时间（秒） */
+  lastPostTime?: number;
+  /** 作者 puid（官方判定用） */
+  puid?: string | number;
 }
 
 interface SearchInnerDto {
@@ -497,6 +557,19 @@ export class HupuApi {
   }
 
   /**
+   * 信息流媒体补齐专用：先走 m 站 API（~20KB，含正文全部配图，不做视频解析），
+   * 失败再退回 PC 站。信息流一次要补十几条卡片，走 PC 页（200~460KB）太慢也太重。
+   * 视频直链仍只能从 PC 页拿，调用方对视频帖继续用 getThreadDetail。
+   */
+  static async getThreadDetailForFeed(tid: string): Promise<ThreadDetail> {
+    try {
+      return await HupuApi.getThreadDetailFromApi(tid);
+    } catch (e) {
+      return await HupuApi.getThreadDetail(tid);
+    }
+  }
+
+  /**
    * PC 站页面请求去重：详情与首页评论会并行请求同一 URL，
    * 共享同一次网络往返（省掉一份 200KB+ 页面传输）；完成后即释放，不做结果缓存。
    */
@@ -614,10 +687,24 @@ export class HupuApi {
 
   /**
    * 回复列表（楼层）
-   * 数据源：PC 站页面内嵌 JSON（m 站 API 不支持翻页）
-   * 第 1 页：bbs.hupu.com/{tid}.html；第 N 页：bbs.hupu.com/{tid}-{N}.html
+   * 首屏优先 m 站帖子页：`initialRepliesData.initialReplies` 与 PC 详情页 `detail.replies.list`
+   * **逐条一致**（pid/亮数/时间/属地/作者实测全等），页面体积只有 PC 页的 1/4，
+   * 且不受 PC 站风控 / `detailErrorInfo 4046` 限制（PC 页一坏，回复就整块显示"加载失败"）。
+   * m 站只有首屏 20 条、不提供翻页：拿不到回复时回退 PC 首屏，第 2 页起仍走 PC 的 `-{page}.html`。
    */
   static async getReplies(tid: string, page: number): Promise<ReplyListPage> {
+    if (page > 1) {
+      return await HupuApi.getRepliesFromPc(tid, page);
+    }
+    const mobile: ReplyListPage = await HupuApi.getRepliesFromMobile(tid);
+    if (mobile.items.length > 0) {
+      return mobile;
+    }
+    return await HupuApi.getRepliesFromPc(tid, 1);
+  }
+
+  /** PC 站楼层（第 1 页：bbs.hupu.com/{tid}.html；第 N 页：bbs.hupu.com/{tid}-{N}.html） */
+  private static async getRepliesFromPc(tid: string, page: number): Promise<ReplyListPage> {
     const url: string = page <= 1 ? `${PC_BASE}/${tid}.html` : `${PC_BASE}/${tid}-${page}.html`;
     // 第 1 页与详情同 URL：走共用去重，避免并行请求同一页面两次
     const html: string = await HupuApi.getPcPage(url);
@@ -633,6 +720,28 @@ export class HupuApi {
     }
     result.totalCount = replies.count ?? 0;
     result.hasMore = (replies.current ?? 1) < (replies.total ?? 1);
+    return result;
+  }
+
+  /** m 站帖子页首屏回复（与 PC 页同序，体积小、无 PC 风控） */
+  private static async getRepliesFromMobile(tid: string): Promise<ReplyListPage> {
+    const result: ReplyListPage = new ReplyListPage();
+    try {
+      const html: string = await HttpManager.get(`${BASE}/bbs/${tid}.html`);
+      const resp = JSON.parse(HupuApi.extractNextData(html)) as MobNextRespDto;
+      const pp = resp.props?.pageProps;
+      if (!pp) {
+        return result;
+      }
+      result.totalCount = HupuApi.toInt(pp.threadInfo?.t_detail?.replies);
+      const list: MobReplyDto[] = pp.initialRepliesData?.initialReplies ?? [];
+      for (const d of list) {
+        result.items.push(HupuApi.mapMobileReply(d));
+      }
+      // m 站首屏固定 20 条且不提供翻页；满页时仍允许去取 PC 第 2 页
+      result.hasMore = result.items.length >= PAGE_SIZE;
+    } catch (e) {
+    }
     return result;
   }
 
@@ -718,6 +827,11 @@ export class HupuApi {
       item.shareNum = d.share_num ?? 0;
       item.visits = d.visits ?? 0;
       item.time = formatTime(d.create_time ?? d.lastpost_time ?? 0);
+      item.createTime = (d.create_time ?? 0) * 1000;
+      item.lastReplyTime = (d.lastpost_time ?? 0) * 1000;
+      // 该链路的帖子全部来自白名单官方号主页
+      item.official = true;
+      item.authorPuid = puid;
       const pics = d.pics;
       if (pics && pics.length > 0) {
         item.coverUrl = pics[0].url ?? '';
@@ -816,10 +930,16 @@ export class HupuApi {
     const auth = REG_AUTH.exec(block);
     if (auth !== null) {
       item.userName = htmlToText(auth[1]).trim();
+      const euid = REG_AUTH_PUID.exec(block);
+      item.authorPuid = euid !== null ? euid[1] : '';
+      item.official = OfficialAccounts.isOfficialPuid(item.authorPuid) || OfficialAccounts.isOfficial(item.userName);
     }
     const tm = REG_POSTTIME.exec(block);
     if (tm !== null) {
       item.time = tm[1].trim();
+      // PC 话题页展示的是"最后回复时间"；发帖时间无独立字段，用同值近似
+      item.lastReplyTime = parseFeedTime(item.time);
+      item.createTime = item.lastReplyTime;
     }
     return item;
   }
@@ -851,6 +971,8 @@ export class HupuApi {
       item.title = htmlToText(d.title ?? '');
       item.userName = d.username ?? '';
       item.userHeader = d.header ?? '';
+      item.authorPuid = d.puid !== undefined ? `${d.puid}` : '';
+      item.official = OfficialAccounts.isOfficialPuid(item.authorPuid) || OfficialAccounts.isOfficial(item.userName);
       item.topicName = d.forum_name ?? '';
       item.fid = d.fid ?? 0;
       item.replies = d.replies ?? 0;
@@ -872,6 +994,8 @@ export class HupuApi {
       item.videoDuration = d.duration ?? '';
       // 与资讯页首屏时间格式（MM-DD HH:MM）保持一致，避免两段展示风格割裂
       item.time = HupuApi.formatDateTime(d.addtime ?? 0);
+      item.createTime = (d.addtime ?? 0) * 1000;
+      item.lastReplyTime = (d.lastPostTime ?? 0) * 1000;
       result.push(item);
     }
     return result;
@@ -1117,7 +1241,7 @@ export class HupuApi {
     return html.substring(s, e);
   }
 
-  private static toInt(v: string | undefined): number {
+  private static toInt(v: string | number | undefined): number {
     if (!v) {
       return 0;
     }
@@ -1131,7 +1255,13 @@ export class HupuApi {
     item.title = d.title ?? '';
     item.userName = d.userName ?? '';
     item.userHeader = d.userHeader ?? '';
+    item.authorPuid = d.puid !== undefined ? `${d.puid}` : '';
     item.time = d.time ?? '';
+    item.createTime = parseFeedTime(item.time);
+    // 步行街列表时间口径是"最后活跃"，发帖时间用同值近似（否则时间排序会整列未知）
+    item.lastReplyTime = item.createTime;
+    item.pinned = d.topThread === true;
+    item.official = OfficialAccounts.isOfficialPuid(item.authorPuid) || OfficialAccounts.isOfficial(item.userName);
     item.replies = d.replies ?? 0;
     item.recommendCount = d.recommendCount ?? 0;
     item.shareNum = d.shareNum ?? 0;
@@ -1182,9 +1312,29 @@ export class HupuApi {
     item.title = d.title ?? '';
     item.userName = d.username ?? '';
     item.time = d.time ?? '';
+    item.createTime = parseFeedTime(item.time);
+    item.lastReplyTime = item.createTime;
+    item.official = OfficialAccounts.isOfficialPuid(item.authorPuid) || OfficialAccounts.isOfficial(item.userName);
     item.replies = d.replies ?? 0;
     item.recommendCount = d.recommendNum ?? 0;
     item.isVideo = d.isVideo === true;
+    return item;
+  }
+
+  private static mapMobileReply(d: MobReplyDto): ReplyItem {
+    const item: ReplyItem = new ReplyItem();
+    const raw: string = d.content ?? '';
+    item.pid = d.pid !== undefined ? `${d.pid}` : '';
+    item.puid = d.user?.puid !== undefined ? `${d.user.puid}` : '';
+    item.userName = d.user?.username ?? '';
+    item.userHeader = d.user?.header ?? '';
+    item.content = htmlToText(raw);
+    item.contentImages = extractImages(raw);
+    item.light = HupuApi.toInt(d.allLightCount !== undefined ? d.allLightCount : d.light);
+    item.replyCount = HupuApi.toInt(d.replies);
+    item.createDt = d.createDt ?? '';
+    item.location = d.location ?? '';
+    item.isLz = d.is_lz === 1;
     return item;
   }
 

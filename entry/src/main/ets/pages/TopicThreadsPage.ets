@@ -231,7 +231,7 @@ export struct TopicThreadsPage {
     .width('100%')
     .alignItems(HorizontalAlign.Start)
     .padding({ left: Spacing.lg, right: Spacing.lg, top: 14, bottom: 14 })
-    .backgroundColor($r('app.color.bg_card'))
+    .backgroundColor($r('app.color.bg_feed'))
     .onClick(() => {
       this.openThread(item.tid);
     })

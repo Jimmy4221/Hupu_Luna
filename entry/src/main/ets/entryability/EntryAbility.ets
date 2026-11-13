@@ -3,6 +3,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
 import { AppSettings } from '../common/AppSettings';
+import { HistoryStore } from '../database/HistoryStore';
+import { ChannelStore } from '../database/ChannelStore';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'HupuLuna';
@@ -50,6 +52,14 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     // 首帧前恢复频道态，保证首页渲染即为上次停留栏目
     this.restoreChannelState();
+    // 浏览历史/已读状态同理：同步恢复，信息流首屏就能标出已读
+    try {
+      HistoryStore.restoreSync(this.context);
+      AppStorage.setOrCreate<number>('historyVersion', 0);
+      AppStorage.setOrCreate<string>('feedSortMode', ChannelStore.loadFeedSort(this.context));
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'restoreHistory failed');
+    }
     // 首帧前恢复偏好设置（缓存上限 / 自动播放开关）
     AppSettings.restore(this.context);
 

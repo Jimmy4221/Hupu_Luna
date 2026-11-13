@@ -19,6 +19,9 @@ import { CreateThreadPage } from './CreateThreadPage';
 import { LiveWebPage } from './LiveWebPage';
 import { LolMatchCenterPage } from './LolMatchCenterPage';
 import { LolPlayerRatingPage } from './LolPlayerRatingPage';
+import { VideoFullscreenPage } from './VideoFullscreenPage';
+import { HistoryPage } from './HistoryPage';
+import { LolAllPostsPage } from './LolAllPostsPage';
 import { RouteName } from '../common/Theme';
 import { hapticTap } from '../common/Haptics';
 import { SessionManager, HupuUserInfo } from '../network/SessionManager';
@@ -75,6 +78,16 @@ struct Index {
     return arr.length > 0 ? arr[0] : '';
   }
 
+  /** 英雄联盟赛事中心参数（取最新一次入栈的参数；可能未传，返回空串避免 undefined） */
+  private lolCenterParam(): string {
+    const arr: string[] = this.pageStack.getParamByName(RouteName.LOL_MATCH_CENTER) as string[];
+    if (arr.length === 0) {
+      return '';
+    }
+    const last: string = arr[arr.length - 1];
+    return last !== undefined && last !== null ? last : '';
+  }
+
   private tabSymbol(normal: Resource, selected: Resource): TabBarSymbol {
     return {
       normal: new SymbolGlyphModifier(normal).fontColor(['#9499A0']).fontSize(24),
@@ -117,9 +130,15 @@ struct Index {
     } else if (name === RouteName.LIVE_WEB) {
       LiveWebPage({ param: this.pageStack.getParamByName(RouteName.LIVE_WEB)[0] as string })
     } else if (name === RouteName.LOL_MATCH_CENTER) {
-      LolMatchCenterPage()
+      LolMatchCenterPage({ param: this.lolCenterParam() })
     } else if (name === RouteName.LOL_PLAYER_RATING) {
       LolPlayerRatingPage({ param: this.pageStack.getParamByName(RouteName.LOL_PLAYER_RATING)[0] as string })
+    } else if (name === RouteName.VIDEO_FULLSCREEN) {
+      VideoFullscreenPage({ param: this.pageStack.getParamByName(RouteName.VIDEO_FULLSCREEN)[0] as string })
+    } else if (name === RouteName.HISTORY) {
+      HistoryPage()
+    } else if (name === RouteName.LOL_ALL_POSTS) {
+      LolAllPostsPage()
     } else {
       Column({ space: 8 }) {
         Text(name)

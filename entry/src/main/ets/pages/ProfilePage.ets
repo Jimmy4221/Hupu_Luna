@@ -1,4 +1,5 @@
 import { FavStore, FavRecord } from '../database/FavStore';
+import { HistoryStore } from '../database/HistoryStore';
 import { common } from '@kit.AbilityKit';
 import { LoadState, StateView } from '../views/StateView';
 import { Spacing, FontSize, RouteName } from '../common/Theme';
@@ -14,6 +15,9 @@ export struct ProfilePage {
   @StorageLink('selfCardVersion') @Watch('onSelfCardReady') selfCardVersion: number = 0;
   /** 每次切到本 Tab 的自检信号：还没拿到权威资料时补拉一次 */
   @StorageLink('profileTick') @Watch('onTabShown') profileTick: number = 0;
+  /** 浏览历史变更信号（打开/移除/清空） */
+  @StorageLink('historyVersion') @Watch('onHistoryChanged') historyVersion: number = 0;
+  @State historyCount: number = 0;
   @State favs: FavRecord[] = [];
   @State state: LoadState = LoadState.Loading;
   @State loginUser: HupuUserInfo = new HupuUserInfo();
@@ -33,6 +37,11 @@ export struct ProfilePage {
     }
     this.load();
     this.initSession();
+    this.historyCount = HistoryStore.count();
+  }
+
+  onHistoryChanged(): void {
+    this.historyCount = HistoryStore.count();
   }
 
   onFavChanged(): void {
@@ -379,6 +388,10 @@ export struct ProfilePage {
   RowList() {
     Column() {
       this.ListRow('我的收藏', this.favs.length > 0 ? `${this.favs.length} 条` : '', '', () => {
+      })
+      Divider().color($r('app.color.divider')).margin({ left: 14, right: 14 })
+      this.ListRow('浏览历史', this.historyCount > 0 ? `${this.historyCount} 条` : '', '', () => {
+        this.pageStack.pushPathByName(RouteName.HISTORY, '');
       })
     }
     .width('100%')

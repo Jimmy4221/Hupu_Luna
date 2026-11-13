@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.hupluna.app",
     "vendor": "hupluna",
-    "versionCode": 13000001,
-    "versionName": "0.13.1",
+    "versionCode": 13000009,
+    "versionName": "0.13.9",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

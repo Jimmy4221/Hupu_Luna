@@ -173,7 +173,7 @@ hvigor assembleHap
 
 ## 版本信息
 
-- **当前版本**: v0.13.1（versionCode 13000001）
+- **当前版本**: v0.13.9（versionCode 13000009）
 - **最低系统**: HarmonyOS NEXT 6.0
 - **包名**: `com.hupluna.app`
 

@@ -143,7 +143,7 @@ export struct TopicTagPage {
                 Divider().color($r('app.color.divider'))
               }
               .padding({ left: Spacing.lg, right: Spacing.lg })
-              .backgroundColor($r('app.color.bg_card'))
+              .backgroundColor($r('app.color.bg_feed'))
               .onClick(() => {
                 this.pageStack.pushPathByName(RouteName.POST_DETAIL, item.tid);
               })

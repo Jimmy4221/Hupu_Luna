@@ -191,7 +191,7 @@ export struct UserSpacePage {
       .width('100%')
     }
     .padding({ left: Spacing.lg, right: Spacing.lg, top: 13, bottom: 13 })
-    .backgroundColor($r('app.color.bg_card'))
+    .backgroundColor($r('app.color.bg_feed'))
     .onClick(() => {
       this.pageStack.pushPathByName(RouteName.POST_DETAIL, item.tid);
     })
@@ -252,7 +252,7 @@ export struct UserSpacePage {
     .alignItems(HorizontalAlign.Start)
     .width('100%')
     .padding({ left: Spacing.lg, right: Spacing.lg, top: 13, bottom: 13 })
-    .backgroundColor($r('app.color.bg_card'))
+    .backgroundColor($r('app.color.bg_feed'))
     .onClick(() => {
       if (item.tid.length > 0) {
         this.pageStack.pushPathByName(RouteName.POST_DETAIL, item.tid);

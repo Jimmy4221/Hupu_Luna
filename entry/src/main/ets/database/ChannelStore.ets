@@ -4,6 +4,7 @@ import { common } from '@kit.AbilityKit';
 const STORE_NAME: string = 'hupluna_settings';
 const KEY_CHANNELS: string = 'channel_ids';
 const KEY_LAST_CHANNEL: string = 'last_channel_id';
+const KEY_FEED_SORT: string = 'feed_sort';
 
 /** 频道选择持久化（Preferences） */
 export class ChannelStore {
@@ -47,6 +48,30 @@ export class ChannelStore {
     try {
       const pref: preferences.Preferences = preferences.getPreferencesSync(context, { name: STORE_NAME });
       pref.putSync(KEY_LAST_CHANNEL, id);
+      pref.flush();
+    } catch (e) {
+    }
+  }
+
+  /** 信息流排序模式（同步读，首帧可用；默认推荐排序） */
+  static loadFeedSort(context: common.Context): string {
+    try {
+      const pref: preferences.Preferences = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      const v: preferences.ValueType = pref.getSync(KEY_FEED_SORT, '');
+      const s: string = v as string;
+      return s && s.length > 0 ? s : 'recommend';
+    } catch (e) {
+      return 'recommend';
+    }
+  }
+
+  static saveFeedSort(context: common.Context, mode: string): void {
+    if (mode.length === 0) {
+      return;
+    }
+    try {
+      const pref: preferences.Preferences = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      pref.putSync(KEY_FEED_SORT, mode);
       pref.flush();
     } catch (e) {
     }

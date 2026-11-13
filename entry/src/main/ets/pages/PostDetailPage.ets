@@ -6,6 +6,7 @@ import { Spacing, FontSize, Radius, RouteName } from '../common/Theme';
 import { htmlToText, thumbUrl } from '../common/Utils';
 import { compactCount } from '../views/TagChip';
 import { FavStore, FavRecord } from '../database/FavStore';
+import { HistoryStore } from '../database/HistoryStore';
 import { CacheStore } from '../database/CacheStore';
 import { CachedPayload } from '../database/CacheStore';
 import { SessionManager } from '../network/SessionManager';
@@ -14,7 +15,7 @@ import { promptAction, display, uiAppearance } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { AppNavBar } from '../views/AppNavBar';
 import { ImageKnifeComponent } from '@ohos/imageknife';
-import { VideoOrientation } from '../common/VideoOrientation';
+import { VideoPlaybackResult } from './VideoFullscreenPage';
 
 /** 视频区尺寸（vp） */
 class VideoBox {
@@ -152,6 +153,11 @@ export struct PostDetailPage {
 
   /** 应用详情模型到视图状态 */
   private applyDetail(d: ThreadDetail): void {
+    // 浏览历史/已读：详情页是最权威的来源（标题/作者/板块/封面），到这里补齐记录
+    if (d.tid.length > 0 && d.title.length > 0) {
+      HistoryStore.record(this.getCtx(), d.tid, d.title, d.authorName, d.forumName,
+        d.contentImages.length > 0 ? d.contentImages[0] : '', d.replies);
+    }
     // 播放地址变化（缓存 → 网络最新链接）：重置播放态，等新视频就绪后重新自动播放
     const urlChanged: boolean = d.videoUrl !== this.detail.videoUrl;
     this.detail = d;
@@ -269,17 +275,31 @@ export struct PostDetailPage {
     }
   }
 
-  private async requestPostVideoFullscreen(): Promise<void> {
-    await VideoOrientation.enterLandscape();
-    this.videoController.requestFullscreen(true);
-  }
-
-  private onPostVideoFullscreenChange(event: FullscreenInfo): void {
-    if (event.fullscreen) {
-      VideoOrientation.enterLandscape();
-    } else {
-      VideoOrientation.restorePortrait();
+  private requestPostVideoFullscreen(): void {
+    if (!this.detail.hasVideo || this.detail.videoUrl.length === 0) {
+      return;
     }
+    const wasPlaying: boolean = this.videoPlaying;
+    this.videoController.pause();
+    // 先落状态再跳页：onHidden 会读取 videoPlaying 决定回来时是否续播，避免二次起播
+    this.videoPlaying = false;
+    this.resumeOnShow = false;
+    const param: string = `${this.detail.videoUrl}||${this.videoCurSec}||${this.videoMuted ? '1' : '0'}||帖子视频`;
+    this.pageStack.pushPathByName(RouteName.VIDEO_FULLSCREEN, param, (info: PopInfo) => {
+      this.resumeOnShow = false;
+      const result: VideoPlaybackResult = info.result as VideoPlaybackResult;
+      if (result === undefined || result === null) {
+        return;
+      }
+      this.videoMuted = result.muted;
+      if (result.position > 0) {
+        this.videoCurSec = result.position;
+        this.videoController.setCurrentTime(result.position);
+      }
+      if (wasPlaying) {
+        this.videoController.start();
+      }
+    });
   }
 
   /** 进度条拖动/点击跳转：拖动期间用本地值，松手才 seek，避免与播放回调打架 */
@@ -551,7 +571,6 @@ export struct PostDetailPage {
           .muted(this.videoMuted)
           .loop(true)
           .controls(false)
-          .onFullscreenChange((event: FullscreenInfo) => this.onPostVideoFullscreenChange(event))
           .objectFit(ImageFit.Cover)
           .width('100%')
           .height('100%')
@@ -826,7 +845,7 @@ export struct PostDetailPage {
     .width('100%')
     .alignItems(HorizontalAlign.Start)
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-    .backgroundColor($r('app.color.tag_bg'))
+    .backgroundColor($r('app.color.bg_feed'))
     .borderRadius(Radius.sm)
   }
 
@@ -962,7 +981,7 @@ export struct PostDetailPage {
     .width('100%')
     .alignItems(HorizontalAlign.Start)
     .padding({ left: Spacing.lg, right: Spacing.lg, top: 12, bottom: 12 })
-    .backgroundColor($r('app.color.bg_card'))
+    .backgroundColor($r('app.color.bg_feed'))
   }
 
   private orderedPostSubReplies(): SubReplyItem[] {
